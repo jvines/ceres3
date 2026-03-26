@@ -1,0 +1,31 @@
+[project]
+name = "ceres3"
+version = "1.0.0"
+description = "CERES: A Collection of Echelle Reduction Scripts for extracting precise radial velocities and activity indicators from echelle spectrograph data."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Rafael Brahm"},
+    {name = "Andrés Jordán"},
+    {name = "Néstor Espinoza"},
+    {name = "José Viñes"},
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "matplotlib>=3.8",
+    "astropy>=6.0",
+    "PyAstronomy",
+    "statsmodels>=0.14",
+    "ephem",
+    "requests",
+]
+
+[project.scripts]
+ceres3 = "ceres3.cli:main"
+
+[build-system]
+requires = ["meson-python>=0.15", "meson>=1.1", "ninja", "numpy"]
+build-backend = "mesonpy"
+

@@ -6,6 +6,8 @@ from multiprocessing import Pool
 
 import matplotlib
 matplotlib.use('Agg')
+
+_XC_MASKS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'utils', 'data', 'xc_masks') + '/'
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
@@ -53,6 +55,9 @@ def _init_pool_worker(shared_data, shared_P=None):
     Sets global GDATA (and optionally P) once per worker process,
     avoiding re-pickling large arrays on every task.
     """
+    import signal
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
     global GDATA, P
     GDATA = shared_data
     if shared_P is not None:
@@ -3383,7 +3388,7 @@ def get_disp(obname,reffile='reffile.txt'):
 
     return disp
 
-def get_mask_reffile(obname,reffile='reffile.txt',base='../../xc_masks/'):
+def get_mask_reffile(obname,reffile='reffile.txt',base=_XC_MASKS_DIR):
     xc_masks = [base+'G2.mas',\
                 base+'K5.mas',\
                 base+'M2.mas' ]
@@ -3415,7 +3420,7 @@ def get_mask_reffile(obname,reffile='reffile.txt',base='../../xc_masks/'):
 
     return sp_type, xc_mask
 
-def get_mask_query(sp_type_query,base='../../xc_masks/'):
+def get_mask_query(sp_type_query,base=_XC_MASKS_DIR):
     xc_masks = [base+'G2.mas',\
                 base+'K5.mas',\
                 base+'M2.mas' ]

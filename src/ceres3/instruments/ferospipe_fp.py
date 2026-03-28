@@ -834,19 +834,23 @@ for fsim in simFP_FP:
         if fsim == simFP_FP[0]:
                 fp_lines_co1 = fabryperot.InitialGuess(fp_fits_co, lim1=200, lim2=-200,oi=11,of=25)
                 fp_lines_ob1 = fabryperot.InitialGuess(fp_fits_ob, lim1=200, lim2=-200,oi=11,of=25)
+
+                fp_lines_co  = fabryperot.GetFPLines(fp_fits_co,fp_lines_co1,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
+                fp_lines_ob  = fabryperot.GetFPLines(fp_fits_ob,fp_lines_ob1,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
+                fp_lines_co  = fabryperot.GetFPLines(fp_fits_co,fp_lines_co,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
+                fp_lines_ob  = fabryperot.GetFPLines(fp_fits_ob,fp_lines_ob,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
+
+                pdict = {'mjd':mjd,'fplines_co':fp_lines_co, 'fplines_ob':fp_lines_ob}
+                with open(fp_pkl, 'wb') as fpkl:
+                    pickle.dump( pdict, fpkl )
         else:
             with open(dirout + simFP_FP[0].split('/')[-1][:-4]+'fplines.pkl', 'rb') as fpkl:
                 fp_pklt = pickle.load(fpkl, encoding='latin1')
-            # fp_pklt = pickle.load(open(calib_dir + simFP_FP[0].split('/')[-1][:-4]+'fplines.pkl','rb'), encoding='latin1')
             fp_lines_co1 = fp_pklt['fplines_co']
             fp_lines_ob1 = fp_pklt['fplines_ob']
 
             fp_lines_co  = fabryperot.GetFPLines(fp_fits_co,fp_lines_co1,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
             fp_lines_ob  = fabryperot.GetFPLines(fp_fits_ob,fp_lines_ob1,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
-
-            if fsim == simFP_FP[0]:
-                fp_lines_co  = fabryperot.GetFPLines(fp_fits_co,fp_lines_co,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
-                fp_lines_ob  = fabryperot.GetFPLines(fp_fits_ob,fp_lines_ob,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
 
             pdict = {'mjd':mjd,'fplines_co':fp_lines_co, 'fplines_ob':fp_lines_ob}
             with open(fp_pkl, 'wb') as fpkl:

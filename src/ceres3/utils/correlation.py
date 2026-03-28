@@ -8,6 +8,8 @@ from astropy.io import fits as pyfits
 from multiprocessing import Pool
 from scipy import integrate, interpolate, optimize
 
+_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'utils', 'data') + '/'
+
 import matplotlib.pyplot as plt
 from ceres3.utils import vels
 
@@ -72,6 +74,9 @@ def el_stl(wam,fl,SLi,SLf):
 
 
 def _init_corr_p_pool(shared_It, shared_L_Gl, shared_F_Gl, shared_ons, shared_velo2, shared_wat, shared_lux):
+    import signal
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
     global It, L_Gl, F_Gl, ons, velo2, wat, lux
     It = shared_It
     L_Gl = shared_L_Gl
@@ -251,7 +256,7 @@ def gauss1(params,x):
 def res_gauss1(params,g,x):
     return g-gauss1(params,x)
 
-def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrahm/',plot_name = 'MY_LUP',Li=4500.,Lf=6300.,npools=1,base='./utils/Correlation/'):
+def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrahm/',plot_name = 'MY_LUP',Li=4500.,Lf=6300.,npools=1,base=_DATA_DIR):
     """
     This function finds an aproximation to the stellar parameters (Teff, log(g), [Fe/H])
     of the input echelle spectrum using a CCF with model spectra. This code also is

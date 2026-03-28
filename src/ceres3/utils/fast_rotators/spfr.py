@@ -557,7 +557,9 @@ def get_pars_fr(wavst,flxst,model_patht='../../data/COELHO2014/',npools=4,fixG=1
 	#	pars = [8000,4.0,-0.5,40.0]
 	#	print(pars, multiccf(pars))
 
-	p = Pool(npools)
+	def _ignore_sigterm():
+		import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)
+	p = Pool(npools, initializer=_ignore_sigterm)
 	vals = np.array((p.map(multiccf, list(tot))))
 	p.terminate()
 	I = np.argmin(vals)
@@ -582,7 +584,9 @@ def get_pars_fr(wavst,flxst,model_patht='../../data/COELHO2014/',npools=4,fixG=1
 	tt = np.repeat(gt,len(gg)*len(gr)*len(gz))
 	tot = np.vstack((tt,tg,tz,tr)).T
 
-	p = Pool(npools)
+	def _ignore_sigterm():
+		import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)
+	p = Pool(npools, initializer=_ignore_sigterm)
 	vals = np.array((p.map(multiccf, list(tot))))
 	p.terminate()
 	I = np.argmin(vals)

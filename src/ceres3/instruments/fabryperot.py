@@ -231,7 +231,9 @@ def GetFPLines(path, vec, lim1=50, lim2=-50, npools=1, oi=0, of=-1):
         #for i in ies:
         #   print i,ParallelFit(i)
         #print gfd
-        p = Pool(npools)
+        def _ignore_sigterm():
+            import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        p = Pool(npools, initializer=_ignore_sigterm)
         mat = np.array((p.map(ParallelFit, ies)))
 
         p.terminate()

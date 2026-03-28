@@ -8,6 +8,8 @@ from astropy.io import fits as pyfits
 from scipy import integrate, interpolate, optimize
 
 import matplotlib.pyplot as plt
+
+_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'utils', 'data') + '/'
 from ceres3.utils import vels
 
 
@@ -253,10 +255,8 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
 
     L1,F1,SNR1 = spec[0,:,:], spec[5,:,:], spec[8,:,:]
 
-    #width_path = '/home/rabrahm/Desktop/corr2/'
-    #slines_path = '/home/rabrahm/Desktop/corr2/'
-    width_path = '../utils/Correlation/'
-    slines_path = '../utils/Correlation/'
+    width_path = _DATA_DIR
+    slines_path = _DATA_DIR
 
     SLi,SLf = numpy.loadtxt(slines_path+'lines2.dat',dtype=None,unpack=True)
 

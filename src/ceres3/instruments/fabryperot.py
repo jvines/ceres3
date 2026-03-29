@@ -222,61 +222,67 @@ def GetFPLines(path, vec, lim1=50, lim2=-50, npools=1, oi=0, of=-1):
     if of < 0:
         of = sc.shape[0] + of
     pxs = {}
-    def _ignore_sigterm():
-        import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    p = Pool(npools, initializer=_ignore_sigterm)
-    for order in np.arange(oi, of, 1):
-        meds, sigs = [], []
-        vec1 = vec['order_' + str(int(order))]
-        ies = np.arange(len(vec1))
-        mat = np.array((p.map(ParallelFit, ies)))
-        meds = mat[:, 0]
-        amps = mat[:, 1]
-        """
-        for i in np.arange(len(vec1)):
-            if i == 0:
-                dist = int(np.around(0.5*(vec1[i+1]-vec1[i])))
-                ejx = np.arange( int(np.around(vec1[i]))-dist,int(np.around(vec1[i+1]))+dist+1)
-                ejy = sc[order,1,ejx]
-                temp = ejy - np.min(ejy)
-                p0 = [0,np.min(ejy),temp[vec1[i]-ejx[0]],1.,vec1[i],temp[vec1[i+1]-ejx[0]],1.,vec1[i+1]]
-            elif i == len(vec1)-1:
-                dist = int(np.around(0.5*(vec1[i]-vec1[i-1])))
-                ejx = np.arange(int(np.around(vec1[i-1]))-dist,int(np.around(vec1[i]))+dist+1)
-                ejy = sc[order,1,ejx]
-                temp = ejy - np.min(ejy)
-                p0 = [0,np.min(ejy),temp[vec1[i-1]-ejx[0]],1.,vec1[i-1],temp[vec1[i]-ejx[0]],1.,vec1[i]]
-            else:
-                dist = int(np.around(0.5*(vec1[i]-vec1[i-1])))
-                ejx = np.arange(int(np.around(vec1[i-1]))-dist,int(np.around(vec1[i+1]))+dist+1)
-                ejy = sc[order,1,ejx]
-                temp = ejy - np.min(ejy)
-                p0 = [0,np.min(ejy),temp[vec1[i-1]-ejx[0]],1.,vec1[i-1],temp[vec1[i]-ejx[0]],1.,vec1[i],temp[vec1[i+1]-ejx[0]],1.,vec1[i+1]]
+    def _init_fp_pool_worker():
+        import signal
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    p = Pool(npools, initializer=_init_fp_pool_worker)
+    try:
+        for order in np.arange(oi, of, 1):
+            meds, sigs = [], []
+            vec1 = vec['order_' + str(int(order))]
+            ies = np.arange(len(vec1))
+            mat = np.array((p.map(ParallelFit, ies)))
+            meds = mat[:, 0]
+            amps = mat[:, 1]
+            """
+            for i in np.arange(len(vec1)):
+                if i == 0:
+                    dist = int(np.around(0.5*(vec1[i+1]-vec1[i])))
+                    ejx = np.arange( int(np.around(vec1[i]))-dist,int(np.around(vec1[i+1]))+dist+1)
+                    ejy = sc[order,1,ejx]
+                    temp = ejy - np.min(ejy)
+                    p0 = [0,np.min(ejy),temp[vec1[i]-ejx[0]],1.,vec1[i],temp[vec1[i+1]-ejx[0]],1.,vec1[i+1]]
+                elif i == len(vec1)-1:
+                    dist = int(np.around(0.5*(vec1[i]-vec1[i-1])))
+                    ejx = np.arange(int(np.around(vec1[i-1]))-dist,int(np.around(vec1[i]))+dist+1)
+                    ejy = sc[order,1,ejx]
+                    temp = ejy - np.min(ejy)
+                    p0 = [0,np.min(ejy),temp[vec1[i-1]-ejx[0]],1.,vec1[i-1],temp[vec1[i]-ejx[0]],1.,vec1[i]]
+                else:
+                    dist = int(np.around(0.5*(vec1[i]-vec1[i-1])))
+                    ejx = np.arange(int(np.around(vec1[i-1]))-dist,int(np.around(vec1[i+1]))+dist+1)
+                    ejy = sc[order,1,ejx]
+                    temp = ejy - np.min(ejy)
+                    p0 = [0,np.min(ejy),temp[vec1[i-1]-ejx[0]],1.,vec1[i-1],temp[vec1[i]-ejx[0]],1.,vec1[i],temp[vec1[i+1]-ejx[0]],1.,vec1[i+1]]
 
-            coefs = FitFP(ejx,ejy,p0)
-            pt = coefs[2:]
-            if i == 0:
-                sigs.append(pt[1])
-                meds.append(pt[2])
-            else:
-                sigs.append(pt[4])
-                meds.append(pt[5])
-        """
-        #sigs,meds = np.array(sigs),np.array(meds)
+                coefs = FitFP(ejx,ejy,p0)
+                pt = coefs[2:]
+                if i == 0:
+                    sigs.append(pt[1])
+                    meds.append(pt[2])
+                else:
+                    sigs.append(pt[4])
+                    meds.append(pt[5])
+            """
+            #sigs,meds = np.array(sigs),np.array(meds)
 
-        #m = order + or0 + 22
-        #chebs = GLOBALutils.Calculate_chebs(meds, m, Inverse=True,order0=or0,ntotal=n_useful,npix=sc.shape[2],nx=ncoef_x,nm=ncoef_m)
-        #WavSol =  (1.0 + 1.0e-6*wavsol_dict['p_shift']) * (1.0/m) * GLOBALutils.Joint_Polynomial_Cheby(wavsol_dict['p1_co'],chebs,ncoef_x,ncoef_m)
-        I = np.where(meds > sc.shape[2] - 1)[0]
-        meds[I] = float(sc.shape[2] - 2)
-        pxs['order_' + str(int(order))] = meds
-        pxs['order_amps_' + str(int(order))] = amps
-        #pxs['order_'+str(int(order))+'_sigs'] = sigs
-        #print meds
-        #plot(sc[order,1])
-        #plot(meds,sc[order,1,np.around(meds).astype('int')],'ro')
-        #show()
-
-    p.terminate()
-    p.join()
+            #m = order + or0 + 22
+            #chebs = GLOBALutils.Calculate_chebs(meds, m, Inverse=True,order0=or0,ntotal=n_useful,npix=sc.shape[2],nx=ncoef_x,nm=ncoef_m)
+            #WavSol =  (1.0 + 1.0e-6*wavsol_dict['p_shift']) * (1.0/m) * GLOBALutils.Joint_Polynomial_Cheby(wavsol_dict['p1_co'],chebs,ncoef_x,ncoef_m)
+            I = np.where(meds > sc.shape[2] - 1)[0]
+            meds[I] = float(sc.shape[2] - 2)
+            pxs['order_' + str(int(order))] = meds
+            pxs['order_amps_' + str(int(order))] = amps
+            #pxs['order_'+str(int(order))+'_sigs'] = sigs
+            #print meds
+            #plot(sc[order,1])
+            #plot(meds,sc[order,1,np.around(meds).astype('int')],'ro')
+            #show()
+    except Exception:
+        p.terminate()
+        p.join()
+        raise
+    else:
+        p.close()
+        p.join()
     return pxs

@@ -58,12 +58,25 @@ def _init_pool_worker(shared_data, shared_P=None):
     avoiding re-pickling large arrays on every task.
     """
     import signal
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     global GDATA, P
     GDATA = shared_data
     if shared_P is not None:
         P = shared_P
+
+
+def _map_with_owned_pool(npools, initargs, func, work_items):
+    pool = Pool(npools, initializer=_init_pool_worker, initargs=initargs)
+    try:
+        return pool.map(func, work_items)
+    except Exception:
+        pool.terminate()
+        pool.join()
+        raise
+    else:
+        pool.close()
+        pool.join()
 
 # Some functions to be used by the pipeline
 class Constants:
@@ -1315,8 +1328,7 @@ def obtain_P(data, trace_coeffs, Aperture, RON, Gain, NSigma, S, N, Marsh_alg,mi
     if pool is not None:
         spec = np.array((pool.map(PCoeff2, npars_paralel)))
     else:
-        with Pool(npools, initializer=_init_pool_worker, initargs=(data,)) as p:
-            spec = np.array((p.map(PCoeff2, npars_paralel)))
+        spec = np.array((_map_with_owned_pool(npools, (data,), PCoeff2, npars_paralel)))
     return np.sum(spec,axis=0)
 
 def getSpectrum(P,data,trace_coeffs,Aperture,RON,Gain,S,NCosmic, min_col,max_col):
@@ -1378,8 +1390,7 @@ def simple_extraction(data,coefs,ext_aperture,min_extract_col,max_extract_col,np
         if pool is not None:
                 spec = np.array((pool.map(getSimpleSpectrum2, npars_paralel)))
         else:
-                with Pool(npools, initializer=_init_pool_worker, initargs=(data,)) as p:
-                        spec = np.array((p.map(getSimpleSpectrum2, npars_paralel)))
+                spec = np.array((_map_with_owned_pool(npools, (data,), getSimpleSpectrum2, npars_paralel)))
         return spec
 
 def optimal_extraction(data,Pin,coefs,ext_aperture,RON,GAIN,MARSH,COSMIC,min_extract_col,max_extract_col,npools,pool=None):
@@ -1394,8 +1405,7 @@ def optimal_extraction(data,Pin,coefs,ext_aperture,RON,GAIN,MARSH,COSMIC,min_ext
         if pool is not None:
                 spec = np.array((pool.map(getSpectrum2, npars_paralel)))
         else:
-                with Pool(npools, initializer=_init_pool_worker, initargs=(data, Pin)) as p:
-                        spec = np.array((p.map(getSpectrum2, npars_paralel)))
+                spec = np.array((_map_with_owned_pool(npools, (data, Pin), getSpectrum2, npars_paralel)))
         return spec
 
 # CCF functions

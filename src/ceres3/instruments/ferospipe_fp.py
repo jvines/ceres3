@@ -32,7 +32,6 @@ from ceres3.utils import jplephem
 #from PyAstronomy import pyasl
 from math import radians as rad
 from astropy.io import fits as pyfits
-from multiprocessing import Pool
 import pickle
 import time
 import scipy
@@ -312,15 +311,14 @@ if ( os.access(P_ob_fits,os.F_OK) == False )             or ( os.access(P_co_fit
     #Flat -= bac
 
     _t0 = time.perf_counter()
-    with Pool(npools, initializer=GLOBALutils._init_pool_worker, initargs=(Flat,)) as _pool:
-        P_ob = GLOBALutils.obtain_P(Flat,c_ob,ext_aperture,RO_flat,\
-                                        GA_flat,NSigma_Marsh, S_Marsh, \
-                        N_Marsh, Marsh_alg, min_extract_col,\
-                        max_extract_col, npools, pool=_pool)
-        P_co = GLOBALutils.obtain_P(Flat,c_co,ext_aperture,RO_flat,\
-                                        GA_flat,NSigma_Marsh, S_Marsh, \
-                        N_Marsh, Marsh_alg, min_extract_col,\
-                        max_extract_col, npools, pool=_pool)
+    P_ob = GLOBALutils.obtain_P(Flat,c_ob,ext_aperture,RO_flat,\
+                                    GA_flat,NSigma_Marsh, S_Marsh, \
+                    N_Marsh, Marsh_alg, min_extract_col,\
+                    max_extract_col, npools)
+    P_co = GLOBALutils.obtain_P(Flat,c_co,ext_aperture,RO_flat,\
+                                    GA_flat,NSigma_Marsh, S_Marsh, \
+                    N_Marsh, Marsh_alg, min_extract_col,\
+                    max_extract_col, npools)
     _stage_times['obtain_P'] = time.perf_counter() - _t0
     print(f"\t\t[timing] obtain_P: {_stage_times['obtain_P']:.1f}s")
     P = P_ob + P_co
@@ -419,9 +417,8 @@ for fsim in ThAr_Ne_ref:
         print(f"\t\tNo previous extraction or extraction forced for ThAr file {fsim}, extracting...")
 
         _t0 = time.perf_counter()
-        with Pool(npools, initializer=GLOBALutils._init_pool_worker, initargs=(dthar,)) as _pool:
-            thar_Ss_ob = GLOBALutils.simple_extraction(dthar,c_ob,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
-            thar_Ss_co = GLOBALutils.simple_extraction(dthar,c_co,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
+        thar_Ss_ob = GLOBALutils.simple_extraction(dthar,c_ob,ext_aperture,min_extract_col,max_extract_col,npools)
+        thar_Ss_co = GLOBALutils.simple_extraction(dthar,c_co,ext_aperture,min_extract_col,max_extract_col,npools)
         thar_S_ob  = GLOBALutils.optimal_extraction(dthar,P_ob,c_ob,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
         thar_S_co  = GLOBALutils.optimal_extraction(dthar,P_co,c_co,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
         _stage_times['thar_extraction'] = _stage_times.get('thar_extraction', 0) + (time.perf_counter() - _t0)
@@ -833,9 +830,8 @@ for fsim in simFP_FP:
         print(f"\t\tNo previous extraction or extraction forced for FP file {fsim}, extracting...")
 
         _t0 = time.perf_counter()
-        with Pool(npools, initializer=GLOBALutils._init_pool_worker, initargs=(dfp,)) as _pool:
-            fp_Ss_ob = GLOBALutils.simple_extraction(dfp,c_ob,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
-            fp_Ss_co = GLOBALutils.simple_extraction(dfp,c_co,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
+        fp_Ss_ob = GLOBALutils.simple_extraction(dfp,c_ob,ext_aperture,min_extract_col,max_extract_col,npools)
+        fp_Ss_co = GLOBALutils.simple_extraction(dfp,c_co,ext_aperture,min_extract_col,max_extract_col,npools)
         fp_S_ob  = GLOBALutils.optimal_extraction(dfp,P_ob,c_ob,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
         fp_S_co  = GLOBALutils.optimal_extraction(dfp,P_co,c_co,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
         _stage_times['fp_extraction'] = _stage_times.get('fp_extraction', 0) + (time.perf_counter() - _t0)
@@ -1348,9 +1344,8 @@ for fsim in comp_list:
     ( force_sci_extract ):
         print(f"\t\tNo previous extraction or extraction forced for science file {fsim}, extracting...")
         _t0 = time.perf_counter()
-        with Pool(npools, initializer=GLOBALutils._init_pool_worker, initargs=(data,)) as _pool:
-            sci_Ss_ob = GLOBALutils.simple_extraction(data,c_ob,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
-            sci_Ss_co = GLOBALutils.simple_extraction(data,c_co,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
+        sci_Ss_ob = GLOBALutils.simple_extraction(data,c_ob,ext_aperture,min_extract_col,max_extract_col,npools)
+        sci_Ss_co = GLOBALutils.simple_extraction(data,c_co,ext_aperture,min_extract_col,max_extract_col,npools)
         apsnr = np.sqrt(np.median(sci_Ss_ob[18,1700:2100]))
         if apsnr < 50:
             NCosmic_Marsh = 10.

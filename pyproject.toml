@@ -1,6 +1,6 @@
 [project]
 name = "ceres3"
-version = "1.0.3"
+version = "1.0.4"
 description = "CERES: A Collection of Echelle Reduction Scripts for extracting precise radial velocities and activity indicators from echelle spectrograph data."
 readme = "README.md"
 license = {text = "MIT"}
@@ -28,4 +28,3 @@ ceres3 = "ceres3.cli:main"
 [build-system]
 requires = ["meson-python>=0.15", "meson>=1.1", "ninja", "numpy"]
 build-backend = "mesonpy"
-

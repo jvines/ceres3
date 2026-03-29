@@ -1,12 +1,26 @@
 #!/usr/bin/python
 import math
 import os
+from functools import lru_cache
 
 import numpy
 import numpy as np
 from astropy.io import fits as pyfits
 from multiprocessing import Pool
 from scipy import integrate, interpolate, optimize
+if not hasattr(integrate, 'simps'):
+    integrate.simps = integrate.simpson
+
+
+@lru_cache(maxsize=128)
+def _cached_getdata(path):
+    return pyfits.getdata(path)
+
+
+@lru_cache(maxsize=128)
+def _cached_getheader(path):
+    return pyfits.getheader(path)
+
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'utils', 'data') + '/'
 
@@ -89,7 +103,7 @@ def _init_corr_p_pool(shared_It, shared_L_Gl, shared_F_Gl, shared_ons, shared_ve
 
 def corr_p(model_name):
     global It, L_Gl, F_Gl, ons, velo2, wat, lux
-    sc = pyfits.getdata(model_name)
+    sc = _cached_getdata(model_name)
     FF = sc[It]
     mwa = wat*(1+velo2/lux)
 
@@ -334,8 +348,8 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
     modi = 'R_0.0_5000_30_p00p00.ms.fits'
     #print('Radial velocity calculation via CCF with: '+modi)
 
-    sci = pyfits.getdata(model_path+'vsini_0.0/'+modi)
-    hdi = pyfits.getheader(model_path+'vsini_0.0/'+modi)
+    sci = _cached_getdata(model_path+'vsini_0.0/'+modi)
+    hdi = _cached_getheader(model_path+'vsini_0.0/'+modi)
 
     wam1 = ToVacuum(numpy.arange(len(sci))*hdi['CD1_1']+hdi['CRVAL1'])
 
@@ -373,7 +387,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
 
     B = 0.5*(ccf[0]+ccf[-1])
     A = numpy.max(ccf)-B
-    med = vv[numpy.where(ccf == numpy.max(ccf))[0]]
+    med = vv[numpy.argmax(ccf)]
     sig = 20.0
     guess1 = numpy.array([B,A,med,sig],dtype='float64')
     ajustep=optimize.leastsq(res_gauss1,guess1,args=(ccf,vv))
@@ -402,7 +416,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
     LGI = 4.5
     for nam in names:
         if ( (os.access(model_path+'vsini_0.0/R_0.0_'+nam,os.F_OK) == True)):
-            mod = pyfits.getdata(model_path+'vsini_0.0/R_0.0_'+nam)
+            mod = _cached_getdata(model_path+'vsini_0.0/R_0.0_'+nam)
             flm = mod[Im]
             cc = 0.0
             nor = 0.0
@@ -425,7 +439,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
                 ccmax = cc
                 namemax = nam
 
-    mod = pyfits.getheader(model_path+'vsini_0.0/R_0.0_'+namemax)
+    mod = _cached_getheader(model_path+'vsini_0.0/R_0.0_'+namemax)
     TEI = mod['TEFF']
 
     #print('Teff (initial) = '+str(TEI)+' K')
@@ -454,7 +468,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
             for g in vecgi:
                 nam = get_name(t,g,z)
                 if ( (os.access(model_path+'vsini_0.0/R_0.0_'+nam,os.F_OK) == True)):
-                    mod = pyfits.getdata(model_path+'vsini_0.0/R_0.0_'+nam)
+                    mod = _cached_getdata(model_path+'vsini_0.0/R_0.0_'+nam)
                     flm = mod[Im]
                     flm = el_stl(wam,flm,SLi,SLf)
                     intfl = 0.0
@@ -496,7 +510,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
         for g in vecgi:
             nam = get_name(TEI,g,MEI)
             if ( (os.access(model_path+'vsini_0.0/R_0.0_'+nam,os.F_OK) == True)):
-                mod = pyfits.getdata(model_path+'vsini_0.0/R_0.0_'+nam)
+                mod = _cached_getdata(model_path+'vsini_0.0/R_0.0_'+nam)
 
                 mflg = mod[Ig]
 
@@ -510,7 +524,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
                 tck = interpolate.splrep(MLs,MFs,k=3,s=0)
                 NMFs = interpolate.splev(Ls,tck,der=0)
 
-                cc2 = integrate.simps(Fs[1:-1]*NMFs[1:-1])/math.sqrt(integrate.simps(Fs[1:-1]*Fs[1:-1])*integrate.simps(NMFs[1:-1]*NMFs[1:-1]))
+                cc2 = integrate.simps(Fs[1:-1]*NMFs[1:-1], Ls[1:-1])/math.sqrt(integrate.simps(Fs[1:-1]*Fs[1:-1], Ls[1:-1])*integrate.simps(NMFs[1:-1]*NMFs[1:-1], Ls[1:-1]))
                 #print(g,cc2)
                 if cc2 > cfi2:
                     cfi2 = cc2
@@ -533,7 +547,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
         if late==False:
 
             MOG = get_name(TEI,LGI,MEI)
-            sc = pyfits.getdata(model_path+'vsini_0.0/R_0.0_'+MOG)
+            sc = _cached_getdata(model_path+'vsini_0.0/R_0.0_'+MOG)
 
             #print('-Calculating radial shift and v*sin(i) with model: '+MOG)
 
@@ -561,7 +575,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
             vv = numpy.array(vv)
             B = 0.5*(ccf[0]+ccf[-1])
             A = numpy.max(ccf)-B
-            med = vv[numpy.where(ccf == numpy.max(ccf))[0]]
+            med = vv[numpy.argmax(ccf)]
             sig = 20.0
             guess1 = np.array([B,A,med,sig],dtype='float64')
             ajustep=optimize.leastsq(res_gauss1,guess1,args=(ccf,vv))
@@ -579,7 +593,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
             while vi <= 20.0:
                 ai = 0
                 if ( (os.access(model_path+'vsini_'+str(vi)+'/R_'+str(vi)+'_'+MOG,os.F_OK) == True)):
-                    modt = pyfits.getdata(model_path+'vsini_'+str(vi)+'/R_'+str(vi)+'_'+MOG)
+                    modt = _cached_getdata(model_path+'vsini_'+str(vi)+'/R_'+str(vi)+'_'+MOG)
                     flm2 = modt[Im]
                     flm2 = el_stl(wam,flm2,SLi,SLf)
                     for I in ies:
@@ -639,7 +653,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
                 tck = interpolate.splrep(anchos,numpy.array(vsini),k=3,s=0)
                 calrot = interpolate.splev(sig2,tck,der=0)
                 difs = (numpy.array(vsini) - calrot)**2
-                AI = int(numpy.where(difs == numpy.min(difs))[0])
+                AI = int(numpy.argmin(difs))
                 rot = vsini[AI]
             else:
                 rot = vsini[0]
@@ -695,7 +709,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
             with Pool(npools, initializer=_init_corr_p_pool, initargs=(It, L_Gl, F_Gl, ons, velo2, wat, lux)) as p:
                 xc_values = np.array(p.map(corr_p, MOD2))
             I_min = np.argmax(xc_values)
-            hd = pyfits.getheader(MOD2[I_min])
+            hd = _cached_getheader(MOD2[I_min])
             maxCor = xc_values[I_min]
             maxG   = hd['LOG_G']
             maxT   = hd['TEFF']
@@ -709,13 +723,13 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
 
             for m in MOD:
 
-                hd = pyfits.getheader(model_path1+m)
+                hd = _cached_getheader(model_path1+m)
                 T  = hd['TEFF']
                 G  = hd['LOG_G']
                 Z  = hd['FEH']
                 vs = hd['VSINI']
 
-                sc = pyfits.getdata(model_path1+m)
+                sc = _cached_getdata(model_path1+m)
                 FF = sc[It]
                 mwa = wat*(1+velo2/lux)
                 NCCF = corr(L,F,mwa,FF,ons)
@@ -783,7 +797,7 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
             with Pool(npools, initializer=_init_corr_p_pool, initargs=(It, L_Gl, F_Gl, ons, velo2, wat, lux)) as p:
                 xc_values = np.array(p.map(corr_p, MOD2))
             I_min = np.argmax(xc_values)
-            hd = pyfits.getheader(MOD2[I_min])
+            hd = _cached_getheader(MOD2[I_min])
             maxCor = xc_values[I_min]
             maxG   = hd['LOG_G']
             maxT   = hd['TEFF']
@@ -795,12 +809,12 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
             maxCor = 0.0
             for m in MOD:
                 calculated.append(m)
-                hd = pyfits.getheader(model_path1+m)
+                hd = _cached_getheader(model_path1+m)
                 T  = hd['TEFF']
                 G  = hd['LOG_G']
                 Z  = hd['FEH']
 
-                sc = pyfits.getdata(model_path1+m)
+                sc = _cached_getdata(model_path1+m)
                 FF = sc[It]
                 mwa = wat*(1+velo2/lux)
 
@@ -904,12 +918,12 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
 
         for fits in names:
             calculated.append(fits)
-            hd = pyfits.getheader(model_path2+fits)
+            hd = _cached_getheader(model_path2+fits)
             T  = hd['TEFF']
             G  = hd['LOG_G']
             Z  = hd['FEH']
 
-            sc = pyfits.getdata(model_path2+fits)
+            sc = _cached_getdata(model_path2+fits)
             FF = sc[It]
             mwa = wat*(1+velfin/lux)
 
@@ -1086,12 +1100,12 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
 
         for fits in names:
             calculated.append(fits)
-            hd = pyfits.getheader(model_path2+fits)
+            hd = _cached_getheader(model_path2+fits)
             T  = hd['TEFF']
             G  = hd['LOG_G']
             Z  = hd['FEH']
 
-            sc = pyfits.getdata(model_path2+fits)
+            sc = _cached_getdata(model_path2+fits)
             FF = sc[It]
             mwa = wat*(1+velfin/lux)
 
@@ -1174,8 +1188,8 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
     #print('HI')
     if doplot:
         nam = f'R_{rotfin}_{get_name(Tfin,Gfin,Zfin)}'
-        hd = pyfits.getheader(model_path2+nam)
-        sc = pyfits.getdata(model_path2+nam)
+        hd = _cached_getheader(model_path2+nam)
+        sc = _cached_getdata(model_path2+nam)
         PWAV = ToVacuum(numpy.arange(len(sc))*hd['CD1_1']+hd['CRVAL1'])
         PWAV = PWAV*(1+velfin/lux)
         for i in range(L1.shape[0]):

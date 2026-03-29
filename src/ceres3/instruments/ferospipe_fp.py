@@ -32,7 +32,9 @@ from ceres3.utils import jplephem
 #from PyAstronomy import pyasl
 from math import radians as rad
 from astropy.io import fits as pyfits
+from multiprocessing import Pool
 import pickle
+import time
 import scipy
 import scipy.interpolate
 from scipy import interpolate
@@ -148,6 +150,8 @@ OO0 = 26
 n_useful = 25    # up to which order do we care?
 thar_end = '.harps.3iwdat'
 
+_pipeline_warnings = []
+
 # file containing the log
 log = dirout+'night.log'
 
@@ -155,6 +159,9 @@ print("\n\n\tFEROS MPG2.2m  PIPELINE\n")
 print(f"\tRAW data is in {dirin}")
 print(f"\tProducts of reduction will be in {dirout}")
 print('\n')
+
+_t_pipeline_start = time.perf_counter()
+_stage_times = {}
 
 if is_calib:
     biases, flats, ThArNe_ref, ThAr_Ne_ref, simThAr_sci, simSky_sci, ThAr_ref_dates, \
@@ -304,14 +311,18 @@ if ( os.access(P_ob_fits,os.F_OK) == False )             or ( os.access(P_co_fit
     #print gfd
     #Flat -= bac
 
-    P_ob = GLOBALutils.obtain_P(Flat,c_ob,ext_aperture,RO_flat,\
-                                    GA_flat,NSigma_Marsh, S_Marsh, \
-                    N_Marsh, Marsh_alg, min_extract_col,\
-                    max_extract_col, npools)
-    P_co = GLOBALutils.obtain_P(Flat,c_co,ext_aperture,RO_flat,\
-                                    GA_flat,NSigma_Marsh, S_Marsh, \
-                    N_Marsh, Marsh_alg, min_extract_col,\
-                    max_extract_col, npools)
+    _t0 = time.perf_counter()
+    with Pool(npools, initializer=GLOBALutils._init_pool_worker, initargs=(Flat,)) as _pool:
+        P_ob = GLOBALutils.obtain_P(Flat,c_ob,ext_aperture,RO_flat,\
+                                        GA_flat,NSigma_Marsh, S_Marsh, \
+                        N_Marsh, Marsh_alg, min_extract_col,\
+                        max_extract_col, npools, pool=_pool)
+        P_co = GLOBALutils.obtain_P(Flat,c_co,ext_aperture,RO_flat,\
+                                        GA_flat,NSigma_Marsh, S_Marsh, \
+                        N_Marsh, Marsh_alg, min_extract_col,\
+                        max_extract_col, npools, pool=_pool)
+    _stage_times['obtain_P'] = time.perf_counter() - _t0
+    print(f"\t\t[timing] obtain_P: {_stage_times['obtain_P']:.1f}s")
     P = P_ob + P_co
 
     if ( os.access(P_fits,os.F_OK) ):
@@ -330,6 +341,7 @@ if ( os.access(P_ob_fits,os.F_OK) == False )             or ( os.access(P_co_fit
 
     print("\t\t\tNo extracted flat object spectra found or extraction forced, extracting and saving...")
 
+    _t0 = time.perf_counter()
     S_flat_ob  = GLOBALutils.optimal_extraction(Flat,P_ob,c_ob,ext_aperture,\
                                                 RO_flat,GA_flat,S_Marsh,NCosmic_Marsh,\
                                                 min_extract_col,max_extract_col,npools)
@@ -345,6 +357,8 @@ if ( os.access(P_ob_fits,os.F_OK) == False )             or ( os.access(P_co_fit
     S_flat_co  = GLOBALutils.optimal_extraction(Flat,P_co,c_co,ext_aperture,RO_flat,GA_flat,\
                                                 S_Marsh,NCosmic_Marsh,min_extract_col,\
                                                 max_extract_col,npools)
+    _stage_times['flat_optimal_extraction'] = time.perf_counter() - _t0
+    print(f"\t\t[timing] flat_optimal_extraction: {_stage_times['flat_optimal_extraction']:.1f}s")
 
     # write P_on and S_flat_co as fits files
 
@@ -366,8 +380,11 @@ else:
 S_flat_ob_n, norms_ob = GLOBALutils.FlatNormalize_single( S_flat_ob, mid=int(.5*S_flat_ob.shape[2]))
 S_flat_co_n, norms_co = GLOBALutils.FlatNormalize_single( S_flat_co, mid=int(.5*S_flat_co.shape[2]))
 
-if nord_ob < n_useful:
-    n_useful = thar_S_ob.shape[0]
+if nord_ob < o0 + n_useful:
+    _old_n = n_useful
+    n_useful = nord_ob - o0
+    _pipeline_warnings.append(f"Order count clamped: {nord_ob} orders traced, using {n_useful} of {_old_n} (o0={o0}). Blue coverage reduced.")
+    print(f"WARNING: Order count clamped from {_old_n} to {n_useful} ({nord_ob} orders traced, o0={o0})")
 
 print('\n\tExtraction of ThAr calibration frames:')
 # Extract all ThAr+Ne files
@@ -401,10 +418,14 @@ for fsim in ThAr_Ne_ref:
 
         print(f"\t\tNo previous extraction or extraction forced for ThAr file {fsim}, extracting...")
 
-        thar_Ss_ob = GLOBALutils.simple_extraction(dthar,c_ob,ext_aperture,min_extract_col,max_extract_col,npools)
+        _t0 = time.perf_counter()
+        with Pool(npools, initializer=GLOBALutils._init_pool_worker, initargs=(dthar,)) as _pool:
+            thar_Ss_ob = GLOBALutils.simple_extraction(dthar,c_ob,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
+            thar_Ss_co = GLOBALutils.simple_extraction(dthar,c_co,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
         thar_S_ob  = GLOBALutils.optimal_extraction(dthar,P_ob,c_ob,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
-        thar_Ss_co = GLOBALutils.simple_extraction(dthar,c_co,ext_aperture,min_extract_col,max_extract_col,npools)
         thar_S_co  = GLOBALutils.optimal_extraction(dthar,P_co,c_co,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
+        _stage_times['thar_extraction'] = _stage_times.get('thar_extraction', 0) + (time.perf_counter() - _t0)
+        print(f"\t\t[timing] thar_extraction: {time.perf_counter() - _t0:.1f}s")
 
         if (os.access(thar_fits_ob,os.F_OK)):
             os.remove( thar_fits_ob )
@@ -459,8 +480,11 @@ for i in range(len(sorted_ThAr_Ne_dates)):
         All_Intensities   = np.array([])
         All_residuals   = np.array([])
 
-        if thar_S_ob.shape[0] < n_useful:
-            n_useful = thar_S_ob.shape[0]
+        if thar_S_ob.shape[0] < o0 + n_useful:
+            _old_n = n_useful
+            n_useful = thar_S_ob.shape[0] - o0
+            _pipeline_warnings.append(f"ThAr order count clamped: {thar_S_ob.shape[0]} orders in ThAr, using {n_useful} of {_old_n}")
+            print(f"WARNING: ThAr order count clamped from {_old_n} to {n_useful} ({thar_S_ob.shape[0]} orders, o0={o0})")
 
         wavss   =[]
         orss    = []
@@ -808,10 +832,14 @@ for fsim in simFP_FP:
 
         print(f"\t\tNo previous extraction or extraction forced for FP file {fsim}, extracting...")
 
-        fp_Ss_ob = GLOBALutils.simple_extraction(dfp,c_ob,ext_aperture,min_extract_col,max_extract_col,npools)
+        _t0 = time.perf_counter()
+        with Pool(npools, initializer=GLOBALutils._init_pool_worker, initargs=(dfp,)) as _pool:
+            fp_Ss_ob = GLOBALutils.simple_extraction(dfp,c_ob,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
+            fp_Ss_co = GLOBALutils.simple_extraction(dfp,c_co,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
         fp_S_ob  = GLOBALutils.optimal_extraction(dfp,P_ob,c_ob,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
-        fp_Ss_co = GLOBALutils.simple_extraction(dfp,c_co,ext_aperture,min_extract_col,max_extract_col,npools)
         fp_S_co  = GLOBALutils.optimal_extraction(dfp,P_co,c_co,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
+        _stage_times['fp_extraction'] = _stage_times.get('fp_extraction', 0) + (time.perf_counter() - _t0)
+        print(f"\t\t[timing] fp_extraction: {time.perf_counter() - _t0:.1f}s")
 
         if (os.access(fp_fits_ob,os.F_OK)):
             os.remove( fp_fits_ob )
@@ -835,10 +863,13 @@ for fsim in simFP_FP:
                 fp_lines_co1 = fabryperot.InitialGuess(fp_fits_co, lim1=200, lim2=-200,oi=11,of=25)
                 fp_lines_ob1 = fabryperot.InitialGuess(fp_fits_ob, lim1=200, lim2=-200,oi=11,of=25)
 
+                _t0 = time.perf_counter()
                 fp_lines_co  = fabryperot.GetFPLines(fp_fits_co,fp_lines_co1,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
                 fp_lines_ob  = fabryperot.GetFPLines(fp_fits_ob,fp_lines_ob1,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
                 fp_lines_co  = fabryperot.GetFPLines(fp_fits_co,fp_lines_co,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
                 fp_lines_ob  = fabryperot.GetFPLines(fp_fits_ob,fp_lines_ob,lim1=200,lim2=-200,npools=npools,oi=11,of=25)
+                _stage_times['fp_lines'] = _stage_times.get('fp_lines', 0) + (time.perf_counter() - _t0)
+                print(f"\t\t[timing] fp_lines: {time.perf_counter() - _t0:.1f}s")
 
                 pdict = {'mjd':mjd,'fplines_co':fp_lines_co, 'fplines_ob':fp_lines_ob}
                 with open(fp_pkl, 'wb') as fpkl:
@@ -1179,8 +1210,8 @@ for i in range(len(simSky_sci)):
             new_sky_obnames.append( obname )
             print(f"\t\t{obname}")
 
-if n_useful>nord_ob:
-    n_useful=nord_ob
+if n_useful > nord_ob - o0:
+    n_useful = nord_ob - o0
 
 comp_list = new_list + new_sky
 moon_alts,moon_ills = {},{}
@@ -1316,8 +1347,10 @@ for fsim in comp_list:
     ( os.access(sci_fits_ob_simple,os.F_OK) == False ) or ( os.access(sci_fits_co_simple,os.F_OK) == False ) or \
     ( force_sci_extract ):
         print(f"\t\tNo previous extraction or extraction forced for science file {fsim}, extracting...")
-        sci_Ss_ob = GLOBALutils.simple_extraction(data,c_ob,ext_aperture,min_extract_col,max_extract_col,npools)
-        sci_Ss_co = GLOBALutils.simple_extraction(data,c_co,ext_aperture,min_extract_col,max_extract_col,npools)
+        _t0 = time.perf_counter()
+        with Pool(npools, initializer=GLOBALutils._init_pool_worker, initargs=(data,)) as _pool:
+            sci_Ss_ob = GLOBALutils.simple_extraction(data,c_ob,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
+            sci_Ss_co = GLOBALutils.simple_extraction(data,c_co,ext_aperture,min_extract_col,max_extract_col,npools,pool=_pool)
         apsnr = np.sqrt(np.median(sci_Ss_ob[18,1700:2100]))
         if apsnr < 50:
             NCosmic_Marsh = 10.
@@ -1326,6 +1359,9 @@ for fsim in comp_list:
 
         sci_S_ob  = GLOBALutils.optimal_extraction(data,P_ob,c_ob,ext_aperture,ronoise,gain,S_Marsh,NCosmic_Marsh,min_extract_col,max_extract_col,npools)
         sci_S_co  = GLOBALutils.optimal_extraction(data,P_co,c_co,ext_aperture,ronoise,gain,S_Marsh,50.,min_extract_col,max_extract_col,npools)
+        _sci_ext_t = time.perf_counter() - _t0
+        _stage_times['sci_extraction'] = _stage_times.get('sci_extraction', 0) + _sci_ext_t
+        print(f"\t\t[timing] sci_extraction: {_sci_ext_t:.1f}s")
 
         if (os.access(sci_fits_ob,os.F_OK)):
             os.remove( sci_fits_ob )
@@ -1488,8 +1524,8 @@ for fsim in comp_list:
             All_Intensities_co   = np.array([])
             All_residuals_co     = np.array([])
 
-            if lines_thar_co.shape[0] < n_useful:
-                n_useful = lines_thar_co.shape[0]
+            if lines_thar_co.shape[0] < o0 + n_useful:
+                n_useful = lines_thar_co.shape[0] - o0
             order = o0
             c_p2w_c = []
             shifts = []
@@ -1728,7 +1764,11 @@ if (not JustExtract):
                     IJ = np.where(spec[5,i]!=0.)[0]
                     spec2[5,i,IJ] = GLOBALutils.convolve(spec[0,i,IJ],spec[5,i,IJ],Rx)
                 try:
+                    _t0 = time.perf_counter()
                     T_eff, logg, Z, vsini, vel0, ccf = correlation.CCF(spec2,model_path=models_path,npools=npools)
+                    _ccf_t = time.perf_counter() - _t0
+                    _stage_times['ccf'] = _stage_times.get('ccf', 0) + _ccf_t
+                    print(f"\t\t\t[timing] CCF: {_ccf_t:.1f}s")
                     line = "%6d %4.1f %4.1f %8.1f %8.1f\n" % (T_eff,logg, Z, vsini, vel0)
                     f = open(pars_file,'w')
                     f.write(line)
@@ -1981,3 +2021,9 @@ if (not JustExtract):
         hdu.close()
 
 f_res.close()
+
+_stage_times['total'] = time.perf_counter() - _t_pipeline_start
+print("\n\t[timing] Stage summary (seconds):")
+for _k, _v in _stage_times.items():
+    print(f"\t  {_k}: {_v:.1f}")
+print()

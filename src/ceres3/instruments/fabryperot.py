@@ -222,22 +222,14 @@ def GetFPLines(path, vec, lim1=50, lim2=-50, npools=1, oi=0, of=-1):
     if of < 0:
         of = sc.shape[0] + of
     pxs = {}
+    def _ignore_sigterm():
+        import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    p = Pool(npools, initializer=_ignore_sigterm)
     for order in np.arange(oi, of, 1):
-        #print order
-        #order=48
         meds, sigs = [], []
         vec1 = vec['order_' + str(int(order))]
         ies = np.arange(len(vec1))
-        #for i in ies:
-        #   print i,ParallelFit(i)
-        #print gfd
-        def _ignore_sigterm():
-            import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        p = Pool(npools, initializer=_ignore_sigterm)
         mat = np.array((p.map(ParallelFit, ies)))
-
-        p.terminate()
-        p.join()
         meds = mat[:, 0]
         amps = mat[:, 1]
         """
@@ -285,4 +277,6 @@ def GetFPLines(path, vec, lim1=50, lim2=-50, npools=1, oi=0, of=-1):
         #plot(meds,sc[order,1,np.around(meds).astype('int')],'ro')
         #show()
 
+    p.terminate()
+    p.join()
     return pxs

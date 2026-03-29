@@ -455,8 +455,7 @@ def run_reduction(redis_client, job_id, date, npools=8, do_class=True,
     try:
         # Import and run the pipeline directly — no subprocess
         import importlib
-        sys.argv = ["ceres3-" + instrument] + argv
-        pipeline = importlib.import_module("ceres3.instruments." + {
+        module_name = "ceres3.instruments." + {
             'feros': 'ferospipe_fp',
             'harps': 'harpspipe',
             'coralie': 'coraliepipe',
@@ -472,9 +471,27 @@ def run_reduction(redis_client, job_id, date, npools=8, do_class=True,
             'pucheros': 'pucherospipe',
             'arces': 'arcespipe',
             'vbt': 'vbtpipe',
-        }.get(instrument, 'ferospipe_fp'))
-        # Pipeline runs on import (module-level code). Force re-execution:
-        importlib.reload(pipeline)
+        }.get(instrument, 'ferospipe_fp')
+        sys.argv = ["ceres3-" + instrument] + argv
+        if module_name in sys.modules:
+            # Already imported — reload to re-execute with new argv
+            importlib.reload(sys.modules[module_name])
+        else:
+            # First import — module-level code runs the pipeline once
+            importlib.import_module(module_name)
+        pipeline = sys.modules[module_name]
+
+        # Check for pipeline warnings (e.g. clamped order count)
+        pipeline_warnings = getattr(pipeline, '_pipeline_warnings', [])
+        if pipeline_warnings:
+            warning_msg = "; ".join(pipeline_warnings)
+            logger.warning("Pipeline warnings for %s: %s", job_id, warning_msg)
+            publish_event(redis_client, EVENTS_CHANNEL, job_id, "running",
+                          "reduction:warning", {
+                              "warnings": pipeline_warnings,
+                              "message": warning_msg,
+                              "machine_id": MACHINE_ID,
+                          })
 
         update_job_status(
             redis_client, job_id, STATUS_COMPLETED,
@@ -650,7 +667,7 @@ def main():
 
             try:
                 job_heartbeat_start(job_id)
-                effective_npools = settings.CERES_NPOOLS
+                effective_npools = npools if npools and npools > 0 else settings.CERES_NPOOLS
 
                 killer.suppress_signals()
                 try:

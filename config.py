@@ -17,9 +17,8 @@ class Settings:
             os.environ.get('MAX_CONCURRENT_REDUCTIONS', 1)
         )
 
-        slot_cost = int(os.environ.get('SLOT_COST', 4))
         self.CERES_NPOOLS = int(
-            os.environ.get('CERES_NPOOLS', slot_cost)
+            os.environ.get('CERES_NPOOLS', 8)
         )
         self.CERES_NSIGMAS = float(
             os.environ.get('CERES_NSIGMAS', 5.0)

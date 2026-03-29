@@ -15,6 +15,8 @@ import numpy as np
 from numpy import sqrt, array
 import scipy
 from scipy import signal, special, optimize, interpolate, integrate
+if not hasattr(integrate, 'simps'):
+    integrate.simps = integrate.simpson
 import scipy.special as sp
 import requests
 import statsmodels.api as sm
@@ -1300,7 +1302,7 @@ def PCoeff2(pars):
     FinalMatrix.resize(GDATA.shape[0],GDATA.shape[1])   # And return the array in matrix-form.
     return FinalMatrix
 
-def obtain_P(data, trace_coeffs, Aperture, RON, Gain, NSigma, S, N, Marsh_alg,min_col,max_col,npools):
+def obtain_P(data, trace_coeffs, Aperture, RON, Gain, NSigma, S, N, Marsh_alg,min_col,max_col,npools,pool=None):
     npars_paralel = []
 
     if isinstance(min_col, (int, float, np.integer, np.floating)):
@@ -1310,8 +1312,11 @@ def obtain_P(data, trace_coeffs, Aperture, RON, Gain, NSigma, S, N, Marsh_alg,mi
 
     for i in range(len(trace_coeffs)):
         npars_paralel.append([trace_coeffs[i,:],Aperture,RON,Gain,NSigma,S,N,Marsh_alg,int(min_col[i]),int(max_col[i])])
-    with Pool(npools, initializer=_init_pool_worker, initargs=(data,)) as p:
-        spec = np.array((p.map(PCoeff2, npars_paralel)))
+    if pool is not None:
+        spec = np.array((pool.map(PCoeff2, npars_paralel)))
+    else:
+        with Pool(npools, initializer=_init_pool_worker, initargs=(data,)) as p:
+            spec = np.array((p.map(PCoeff2, npars_paralel)))
     return np.sum(spec,axis=0)
 
 def getSpectrum(P,data,trace_coeffs,Aperture,RON,Gain,S,NCosmic, min_col,max_col):
@@ -1362,7 +1367,7 @@ def getSimpleSpectrum2(pars):
     FinalMatrix = np.asarray(Result) # After the function, we convert our list to a Numpy array.
     return FinalMatrix
 
-def simple_extraction(data,coefs,ext_aperture,min_extract_col,max_extract_col,npools):
+def simple_extraction(data,coefs,ext_aperture,min_extract_col,max_extract_col,npools,pool=None):
         npars_paralel = []
         if isinstance(min_extract_col, (int, float, np.integer, np.floating)):
                 min_extract_col = np.zeros(len(coefs)) + int(min_extract_col)
@@ -1370,11 +1375,14 @@ def simple_extraction(data,coefs,ext_aperture,min_extract_col,max_extract_col,np
                 max_extract_col = np.zeros(len(coefs)) + int(max_extract_col)
         for i in range(len(coefs)):
                 npars_paralel.append([coefs[i,:],ext_aperture,int(min_extract_col[i]),int(max_extract_col[i])])
-        with Pool(npools, initializer=_init_pool_worker, initargs=(data,)) as p:
-                spec = np.array((p.map(getSimpleSpectrum2, npars_paralel)))
+        if pool is not None:
+                spec = np.array((pool.map(getSimpleSpectrum2, npars_paralel)))
+        else:
+                with Pool(npools, initializer=_init_pool_worker, initargs=(data,)) as p:
+                        spec = np.array((p.map(getSimpleSpectrum2, npars_paralel)))
         return spec
 
-def optimal_extraction(data,Pin,coefs,ext_aperture,RON,GAIN,MARSH,COSMIC,min_extract_col,max_extract_col,npools):
+def optimal_extraction(data,Pin,coefs,ext_aperture,RON,GAIN,MARSH,COSMIC,min_extract_col,max_extract_col,npools,pool=None):
         npars_paralel = []
         if isinstance(min_extract_col, (int, float, np.integer, np.floating)):
                 min_extract_col = np.zeros(len(coefs)) + int(min_extract_col)
@@ -1383,8 +1391,11 @@ def optimal_extraction(data,Pin,coefs,ext_aperture,RON,GAIN,MARSH,COSMIC,min_ext
 
         for i in range(len(coefs)):
                 npars_paralel.append([coefs[i,:],ext_aperture,RON,GAIN,MARSH,COSMIC,int(min_extract_col[i]),int(max_extract_col[i])])
-        with Pool(npools, initializer=_init_pool_worker, initargs=(data, Pin)) as p:
-                spec = np.array((p.map(getSpectrum2, npars_paralel)))
+        if pool is not None:
+                spec = np.array((pool.map(getSpectrum2, npars_paralel)))
+        else:
+                with Pool(npools, initializer=_init_pool_worker, initargs=(data, Pin)) as p:
+                        spec = np.array((p.map(getSpectrum2, npars_paralel)))
         return spec
 
 # CCF functions

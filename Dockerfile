@@ -48,6 +48,11 @@ RUN mkdir -p /data/ceres_models && \
     mkdir -p "$SITE/ceres3/data" && \
     ln -sf /data/ceres_models/COELHO_MODELS "$SITE/ceres3/data/COELHO_MODELS"
 
+ENV OPENBLAS_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1
+
 RUN chown -R myuser:mygroup /app
 
 USER myuser

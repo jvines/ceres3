@@ -89,7 +89,7 @@ def el_stl(wam,fl,SLi,SLf):
 
 def _init_corr_p_pool(shared_It, shared_L_Gl, shared_F_Gl, shared_ons, shared_velo2, shared_wat, shared_lux):
     import signal
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     global It, L_Gl, F_Gl, ons, velo2, wat, lux
     It = shared_It
@@ -706,8 +706,16 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
 
             all_pars = np.vstack((MOD,np.zeros(len(MOD))+velo2))
             L_Gl,F_Gl =L.copy(),F.copy()
-            with Pool(npools, initializer=_init_corr_p_pool, initargs=(It, L_Gl, F_Gl, ons, velo2, wat, lux)) as p:
+            p = Pool(npools, initializer=_init_corr_p_pool, initargs=(It, L_Gl, F_Gl, ons, velo2, wat, lux))
+            try:
                 xc_values = np.array(p.map(corr_p, MOD2))
+            except Exception:
+                p.terminate()
+                p.join()
+                raise
+            else:
+                p.close()
+                p.join()
             I_min = np.argmax(xc_values)
             hd = _cached_getheader(MOD2[I_min])
             maxCor = xc_values[I_min]
@@ -794,8 +802,16 @@ def CCF(spec, model_path='/dummy/path/',doplot = False, plot_dir = '/home/rabrah
             MOD2 = np.array(MOD2)
 
             L_Gl,F_Gl =L.copy(),F.copy()
-            with Pool(npools, initializer=_init_corr_p_pool, initargs=(It, L_Gl, F_Gl, ons, velo2, wat, lux)) as p:
+            p = Pool(npools, initializer=_init_corr_p_pool, initargs=(It, L_Gl, F_Gl, ons, velo2, wat, lux))
+            try:
                 xc_values = np.array(p.map(corr_p, MOD2))
+            except Exception:
+                p.terminate()
+                p.join()
+                raise
+            else:
+                p.close()
+                p.join()
             I_min = np.argmax(xc_values)
             hd = _cached_getheader(MOD2[I_min])
             maxCor = xc_values[I_min]

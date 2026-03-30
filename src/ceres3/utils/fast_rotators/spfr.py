@@ -557,11 +557,18 @@ def get_pars_fr(wavst,flxst,model_patht='../../data/COELHO2014/',npools=4,fixG=1
 	#	pars = [8000,4.0,-0.5,40.0]
 	#	print(pars, multiccf(pars))
 
-	def _ignore_sigterm():
-		import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)
-	p = Pool(npools, initializer=_ignore_sigterm)
-	vals = np.array((p.map(multiccf, list(tot))))
-	p.terminate()
+	def _reset_sigterm():
+		import signal; signal.signal(signal.SIGTERM, signal.SIG_DFL)
+	p = Pool(npools, initializer=_reset_sigterm)
+	try:
+		vals = np.array((p.map(multiccf, list(tot))))
+	except Exception:
+		p.terminate()
+		p.join()
+		raise
+	else:
+		p.close()
+		p.join()
 	I = np.argmin(vals)
 	best_vals = tot[I]
 	bt,bg,bz,br = best_vals[0],best_vals[1],best_vals[2],best_vals[3]
@@ -584,11 +591,18 @@ def get_pars_fr(wavst,flxst,model_patht='../../data/COELHO2014/',npools=4,fixG=1
 	tt = np.repeat(gt,len(gg)*len(gr)*len(gz))
 	tot = np.vstack((tt,tg,tz,tr)).T
 
-	def _ignore_sigterm():
-		import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)
-	p = Pool(npools, initializer=_ignore_sigterm)
-	vals = np.array((p.map(multiccf, list(tot))))
-	p.terminate()
+	def _reset_sigterm():
+		import signal; signal.signal(signal.SIGTERM, signal.SIG_DFL)
+	p = Pool(npools, initializer=_reset_sigterm)
+	try:
+		vals = np.array((p.map(multiccf, list(tot))))
+	except Exception:
+		p.terminate()
+		p.join()
+		raise
+	else:
+		p.close()
+		p.join()
 	I = np.argmin(vals)
 	best_vals = tot[I]
 	bt,bg,bz,br = best_vals[0],best_vals[1],best_vals[2],best_vals[3]

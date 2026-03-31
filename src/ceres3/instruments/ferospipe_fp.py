@@ -205,7 +205,7 @@ if (pre_process == 1):
     hdu = pyfits.PrimaryHDU( MasterBias )
     if (os.access(dirout+'MasterBias.fits',os.F_OK)):
         os.remove(dirout+'MasterBias.fits')
-    hdu.writeto(dirout+'MasterBias.fits')
+    hdu.writeto(dirout+'MasterBias.fits', overwrite=True)
     print("\t\t-> Masterbias: done!")
 
     # median combine list of flats
@@ -214,7 +214,7 @@ if (pre_process == 1):
     hdu = pyfits.PrimaryHDU( Flat )
     if (os.access(dirout+'Flat.fits',os.F_OK)):
         os.remove(dirout+'Flat.fits')
-    hdu.writeto(dirout+'Flat.fits')
+    hdu.writeto(dirout+'Flat.fits', overwrite=True)
     print("\t\t-> Masterflat: done!")
 
     Flat = Flat.T
@@ -271,7 +271,7 @@ for tim in uni_times:
     hdu = pyfits.PrimaryHDU( Dark )
     if (os.access(dname,os.F_OK)):
         os.remove(dname)
-    hdu.writeto(dname)
+    hdu.writeto(dname, overwrite=True)
     print(f'Dark of {tim} seconds done!')
 
 
@@ -331,11 +331,11 @@ if ( os.access(P_ob_fits,os.F_OK) == False )             or ( os.access(P_co_fit
         os.remove( P_co_fits )
 
     hdu = pyfits.PrimaryHDU( P )
-    hdu.writeto( P_fits )
+    hdu.writeto( P_fits, overwrite=True )
     hdu = pyfits.PrimaryHDU( P_ob )
-    hdu.writeto( P_ob_fits )
+    hdu.writeto( P_ob_fits, overwrite=True )
     hdu = pyfits.PrimaryHDU( P_co )
-    hdu.writeto( P_co_fits )
+    hdu.writeto( P_co_fits, overwrite=True )
 
     print("\t\t\tNo extracted flat object spectra found or extraction forced, extracting and saving...")
 
@@ -349,7 +349,7 @@ if ( os.access(P_ob_fits,os.F_OK) == False )             or ( os.access(P_co_fit
         os.remove( S_flat_ob_fits )
 
     hdu = pyfits.PrimaryHDU( S_flat_ob )
-    hdu.writeto( S_flat_ob_fits )
+    hdu.writeto( S_flat_ob_fits, overwrite=True )
 
     print("\t\t\tNo extracted flat comparison spectra found or extraction forced, extracting and saving...")
     S_flat_co  = GLOBALutils.optimal_extraction(Flat,P_co,c_co,ext_aperture,RO_flat,GA_flat,\
@@ -364,7 +364,7 @@ if ( os.access(P_ob_fits,os.F_OK) == False )             or ( os.access(P_co_fit
         os.remove( S_flat_co_fits )
 
     hdu = pyfits.PrimaryHDU( S_flat_co )
-    hdu.writeto( S_flat_co_fits )
+    hdu.writeto( S_flat_co_fits, overwrite=True )
 
 else:
     print("\t\tExtracted flat object spectra found, loading...")
@@ -434,13 +434,13 @@ for fsim in ThAr_Ne_ref:
             os.remove( thar_fits_co_simple )
 
         hdu = pyfits.PrimaryHDU( thar_S_ob )
-        hdu.writeto( thar_fits_ob )
+        hdu.writeto( thar_fits_ob, overwrite=True )
         hdu = pyfits.PrimaryHDU( thar_S_co )
-        hdu.writeto( thar_fits_co )
+        hdu.writeto( thar_fits_co, overwrite=True )
         hdu = pyfits.PrimaryHDU( thar_Ss_ob )
-        hdu.writeto( thar_fits_ob_simple )
+        hdu.writeto( thar_fits_ob_simple, overwrite=True )
         hdu = pyfits.PrimaryHDU( thar_Ss_co )
-        hdu.writeto( thar_fits_co_simple )
+        hdu.writeto( thar_fits_co_simple, overwrite=True )
     else:
         print(f"\t\tThAr file {fsim} all ready extracted, loading...")
 
@@ -847,13 +847,13 @@ for fsim in simFP_FP:
             os.remove( fp_fits_co_simple )
 
         hdu = pyfits.PrimaryHDU( fp_S_ob )
-        hdu.writeto( fp_fits_ob )
+        hdu.writeto( fp_fits_ob, overwrite=True )
         hdu = pyfits.PrimaryHDU( fp_S_co )
-        hdu.writeto( fp_fits_co )
+        hdu.writeto( fp_fits_co, overwrite=True )
         hdu = pyfits.PrimaryHDU( fp_Ss_ob )
-        hdu.writeto( fp_fits_ob_simple )
+        hdu.writeto( fp_fits_ob_simple, overwrite=True )
         hdu = pyfits.PrimaryHDU( fp_Ss_co )
-        hdu.writeto( fp_fits_co_simple )
+        hdu.writeto( fp_fits_co_simple, overwrite=True )
 
         if fsim == simFP_FP[0]:
                 fp_lines_co1 = fabryperot.InitialGuess(fp_fits_co, lim1=200, lim2=-200,oi=11,of=25)
@@ -1271,7 +1271,7 @@ for fsim in comp_list:
             Centers[i,:]=np.polyval(c_all[i,:],np.arange(len(Centers[i,:])))
         bac = GLOBALutils.get_scat(data,Centers,span=10)
         hdbac = pyfits.PrimaryHDU( bac )
-        hdbac.writeto(bacfile)
+        hdbac.writeto(bacfile, overwrite=True)
     else:
         bac = pyfits.getdata(bacfile)
     data -= bac
@@ -1393,13 +1393,13 @@ for fsim in comp_list:
         hdu = GLOBALutils.update_header(hdu,'HIERARCH MOONALT',float(mephem.alt))
         hdu = GLOBALutils.update_header(hdu,'HIERARCH SMOONALT',str(mephem.alt))
 
-        hdu.writeto( sci_fits_ob )
+        hdu.writeto( sci_fits_ob, overwrite=True )
         hdu = pyfits.PrimaryHDU( sci_S_co )
-        hdu.writeto( sci_fits_co )
+        hdu.writeto( sci_fits_co, overwrite=True )
         hdu = pyfits.PrimaryHDU( sci_Ss_ob )
-        hdu.writeto( sci_fits_ob_simple )
+        hdu.writeto( sci_fits_ob_simple, overwrite=True )
         hdu = pyfits.PrimaryHDU( sci_Ss_co )
-        hdu.writeto( sci_fits_co_simple )
+        hdu.writeto( sci_fits_co_simple, overwrite=True )
     else:
         print(f"\t\t{fsim} has already been extracted, reading in product fits files...")
         sci_S_ob  = pyfits.getdata( sci_fits_ob )

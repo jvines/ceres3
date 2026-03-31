@@ -98,10 +98,13 @@ class Constants:
         DaystoYear = 1.0/365.256363004
 
 def update_header(hdu,k,v,c=''):
+        # Guard against NaN/inf — astropy 7+ rejects them in FITS headers
+        if isinstance(v, (float, np.floating)) and (np.isnan(v) or np.isinf(v)):
+                v = -999.0
         try:
-                hdu.header.update(k,v)
-        except:
                 hdu.header[k] = v
+        except Exception:
+                pass
         return hdu
 
 

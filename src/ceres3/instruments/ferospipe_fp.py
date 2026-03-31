@@ -646,12 +646,8 @@ for i in range(len(sorted_ThAr_Ne_dates)):
             order+=1
 
         hdu_ob, hdu_co = pyfits.PrimaryHDU(spec_ob),pyfits.PrimaryHDU(spec_co)
-        if os.access(dirout + ThAr_Ne_ref[index].split('/')[-1][:-5]+'_sp_ob.fits',os.F_OK):
-            os.remove(dirout + ThAr_Ne_ref[index].split('/')[-1][:-5]+'_sp_ob.fits')
-        hdu_ob.writeto(dirout + ThAr_Ne_ref[index].split('/')[-1][:-5]+'_sp_ob.fits')
-        if os.access(dirout + ThAr_Ne_ref[index].split('/')[-1][:-5]+'_sp_co.fits',os.F_OK):
-            os.remove(dirout + ThAr_Ne_ref[index].split('/')[-1][:-5]+'_sp_co.fits')
-        hdu_co.writeto(dirout + ThAr_Ne_ref[index].split('/')[-1][:-5]+'_sp_co.fits')
+        hdu_ob.writeto(dirout + ThAr_Ne_ref[index].split('/')[-1][:-5]+'_sp_ob.fits', overwrite=True)
+        hdu_co.writeto(dirout + ThAr_Ne_ref[index].split('/')[-1][:-5]+'_sp_co.fits', overwrite=True)
 
         # end COMPARISON orders.
 
@@ -1593,9 +1589,7 @@ for fsim in comp_list:
                 spec_co[1,oss,:] = lines_thar_co[order]
                 order+=1
             hdu_co = pyfits.PrimaryHDU(spec_co)
-            if os.access(dirout + fsim.split('/')[-1][:-5]+'_sp_co.fits',os.F_OK):
-                os.remove(dirout + fsim.split('/')[-1][:-5]+'_sp_co.fits')
-            hdu_co.writeto(dirout + fsim.split('/')[-1][:-5]+'_sp_co.fits')
+            hdu_co.writeto(dirout + fsim.split('/')[-1][:-5]+'_sp_co.fits', overwrite=True)
             hdu = GLOBALutils.update_header(hdu,'HIERARCH THAR CO',fsim.split('/')[-1][:-5]+'_sp_co.fits')
 
 
@@ -1675,9 +1669,7 @@ for fsim in comp_list:
             spec[10,oss,:][L] = spec[6,oss,:][L] / (dlambda_dx[L] ** 2)
             order+=1
         #show()
-        if os.access(dirout + fout, os.F_OK):
-            os.remove(dirout + fout)
-        hdu.writeto(dirout + fout)
+        hdu.writeto(dirout + fout, overwrite=True)
 
 p_mjds,p_shifts = np.array(p_mjds),np.array(p_shifts)
 I = np.argsort(p_mjds)

@@ -1273,7 +1273,16 @@ for fsim in comp_list:
         hdbac = pyfits.PrimaryHDU( bac )
         hdbac.writeto(bacfile, overwrite=True)
     else:
-        bac = pyfits.getdata(bacfile)
+        try:
+            bac = pyfits.getdata(bacfile)
+        except Exception:
+            os.remove(bacfile)
+            Centers = np.zeros((len(c_all),data.shape[1]))
+            for i in range(c_all.shape[0]):
+                Centers[i,:]=np.polyval(c_all[i,:],np.arange(len(Centers[i,:])))
+            bac = GLOBALutils.get_scat(data,Centers,span=10)
+            hdbac = pyfits.PrimaryHDU( bac )
+            hdbac.writeto(bacfile, overwrite=True)
     data -= bac
 
     # Try to get RA/DEC from header, with fallback to 0 for later lookup

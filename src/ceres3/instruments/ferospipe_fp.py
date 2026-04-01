@@ -2011,8 +2011,9 @@ if (not JustExtract):
                 continue
             hdu[0] = GLOBALutils.update_header(hdu[0], key.upper(), np.around(val, 6))
 
+        _si = lambda v: int(v) if np.isfinite(v) else -9999
         line_out = "%-15s %18.8f %9.4f %7.4f %9.3f %5.3f %9.4f   feros   ceres   50000 %6d %5.2f %5.2f %5.1f %4.2f %5.2f %6.1f %4d %8.4f %8.4f %8.4f %8.4f %s\n"%\
-                      (obname, bjd_out, RV, RVerr2, BS2, BSerr, FWHM2, T_eff_epoch, logg_epoch, Z_epoch, vsini_epoch, XC_min, disp_epoch,TEXP, SNR_5130_R, activity['s_index'], activity['halpha'], activity['hei'], activity['nai_d1d2'], ccf_pdf)
+                      (obname, bjd_out, RV, RVerr2, BS2, BSerr, FWHM2, _si(T_eff_epoch), logg_epoch, Z_epoch, vsini_epoch, XC_min, disp_epoch,TEXP, _si(SNR_5130_R), activity['s_index'], activity['halpha'], activity['hei'], activity['nai_d1d2'], ccf_pdf)
         f_res.write(line_out)
         hdu.close()
 

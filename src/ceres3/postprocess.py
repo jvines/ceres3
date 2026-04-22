@@ -40,8 +40,26 @@ def process_spectrum(fits_path, instrument=None, save_1d=False,
     dict with all activity indicator values + metadata.
     """
     hdul = pyfits.open(fits_path)
-    spec = hdul[0].data
     header = hdul[0].header
+
+    # Support three FITS layouts:
+    #   (1) native ceres3 ``*_sp.fits`` — 3-D primary HDU cube.
+    #   (2) pre-merged 2-D ``[wavelength, flux(, error)]`` primary HDU, as
+    #       written by ExoAutomata's ``shared.spectra_prep._rest_frame_single``.
+    #   (3) ``SPECTRUM_1D`` binary-table extension with WAVELENGTH / FLUX
+    #       (and optionally ERROR) columns — ceres3's own 1-D output, also
+    #       the format archive-flow staging writes from MinIO.
+    if 'SPECTRUM_1D' in hdul:
+        tbl = hdul['SPECTRUM_1D'].data
+        wavelength = np.asarray(tbl['WAVELENGTH'], dtype=float)
+        flux = np.asarray(tbl['FLUX'], dtype=float)
+        if 'ERROR' in tbl.dtype.names:
+            error = np.asarray(tbl['ERROR'], dtype=float)
+            spec = np.vstack([wavelength, flux, error])
+        else:
+            spec = np.vstack([wavelength, flux])
+    else:
+        spec = hdul[0].data
 
     if instrument is None:
         instrument = header.get('INST', 'feros').lower()

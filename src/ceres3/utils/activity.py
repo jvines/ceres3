@@ -204,9 +204,12 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
 
     Parameters
     ----------
-    spec : ndarray, shape (11, n_orders, n_pix)
-        The standard CERES output spectrum array.
-        Layer 0: wavelength, 5: normalized flux, 6: errors, 8: SNR.
+    spec : ndarray
+        Either the native 3-D CERES output ``(11, n_orders, n_pix)`` (layers:
+        0=wavelength, 5=normalized flux, 6=errors, 8=SNR) which is merged
+        internally, OR a pre-merged 2-D ``(2 | 3, n_pix)`` array where row 0
+        is wavelength, row 1 is flux and row 2 (optional) is error. Anything
+        else raises ``ValueError``.
     instrument : str
         Instrument name (used to skip indicators outside wavelength coverage).
     output_1d_path : str, optional
@@ -233,8 +236,29 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
         'mg_ib': -999.0, 'mg_ib_err': -999.0,
     }
 
-    # Merge echelle orders into 1D spectrum
-    wavelength, flux, error = merge_echelle(spec)
+    # Accept either the native 3-D CERES cube (merge echelle orders) or a
+    # pre-merged 2-D ``[wavelength, flux(, error)]`` array. Archive flows
+    # that stage an already-combined 1-D spectrum (e.g. ExoAutomata's
+    # ``shared.spectra_prep._rest_frame_single`` output) land on the 2-D
+    # branch; auto-nightly on the 3-D branch.
+    spec = np.asarray(spec)
+    if spec.ndim == 3:
+        wavelength, flux, error = merge_echelle(spec)
+    elif spec.ndim == 2 and spec.shape[0] >= 2:
+        wavelength = np.asarray(spec[0], dtype=float)
+        flux = np.asarray(spec[1], dtype=float)
+        if spec.shape[0] >= 3:
+            error = np.asarray(spec[2], dtype=float)
+        else:
+            # No error column — Poisson-like fallback keeps ``get_line_flux``
+            # error propagation meaningful rather than leaking NaNs.
+            error = np.sqrt(np.clip(flux, 0.01, None))
+    else:
+        raise ValueError(
+            "compute_activity expects a 3-D (n_layers, n_orders, n_pix) cube "
+            "or a pre-merged 2-D (>=2, n_pix) [wavelength, flux(, error)] "
+            f"array; got ndim={spec.ndim}, shape={spec.shape}"
+        )
 
     # Remove bad pixels
     good = (wavelength > 0) & np.isfinite(flux) & np.isfinite(error)

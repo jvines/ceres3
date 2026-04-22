@@ -1,6 +1,6 @@
 [project]
 name = "ceres3"
-version = "1.0.9"
+version = "1.1.0"
 description = "CERES: A Collection of Echelle Reduction Scripts for extracting precise radial velocities and activity indicators from echelle spectrograph data."
 readme = "README.md"
 license = {text = "MIT"}

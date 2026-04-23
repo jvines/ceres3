@@ -31,8 +31,11 @@ MgIb3 = 5183.604
 
 # Instruments that can't compute S-index (wavelength coverage too blue)
 S_INDEX_EXCEPTIONS = {'fideos'}
-# Instruments that can't compute Ca II IRT (wavelength coverage doesn't reach ~8700 A)
-CA_IRT_EXCEPTIONS = {'feros', 'fideos', 'cafe', 'pucheros'}
+# Instruments that can't compute Ca II IRT (wavelength coverage doesn't
+# reach ~8700 Å). HARPS stops at ~6900 Å so the triplet lines fall
+# outside its range — compute_activity would spin through three
+# get_line_flux calls and return -999 for every one.
+CA_IRT_EXCEPTIONS = {'feros', 'fideos', 'cafe', 'pucheros', 'harps'}
 
 
 def _teff_to_bv(teff):

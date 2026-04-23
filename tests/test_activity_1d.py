@@ -162,3 +162,29 @@ def test_process_spectrum_reads_3d_cube_unchanged(tmp_path, synthetic_spectrum) 
 
     assert result["s_index"] != -999.0
     assert result["halpha"] != -999.0
+
+
+def test_process_spectrum_reads_harps_s1d_layout(tmp_path, synthetic_spectrum) -> None:
+    """HARPS / ESPRESSO ESO Phase-3 s1d layout — 1-D flux in the primary HDU
+    with wavelength derived from CRVAL1 / CDELT1 / NAXIS1 header keywords.
+
+    Every HARPS spectrum in ExoAutomata's MinIO archive uses this layout
+    (verified against s3://astronomy/spectra_1d/<star>/HARPS.*.fits).
+    Without this path, every HARPS cerespp archive job ends with
+    ``n_success=0`` — the whole point of wiring up the archive flow.
+    """
+    wavelength, flux, _ = synthetic_spectrum
+    path = tmp_path / "harps_s1d.fits"
+    hdu = fits.PrimaryHDU(data=flux.astype(float))
+    hdu.header["CRVAL1"] = float(wavelength[0])
+    hdu.header["CDELT1"] = float(wavelength[1] - wavelength[0])
+    hdu.header["NAXIS1"] = int(flux.size)
+    hdu.header["INST"] = "harps"
+    hdu.writeto(path, overwrite=True)
+
+    result = process_spectrum(str(path), save_1d=False, update_fits=False)
+
+    assert result["s_index"] != -999.0
+    assert result["halpha"] != -999.0
+    assert result["hei"] != -999.0
+    assert result["nai_d1d2"] != -999.0

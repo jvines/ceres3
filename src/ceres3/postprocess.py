@@ -42,13 +42,16 @@ def process_spectrum(fits_path, instrument=None, save_1d=False,
     hdul = pyfits.open(fits_path)
     header = hdul[0].header
 
-    # Support three FITS layouts:
+    # Support four FITS layouts:
     #   (1) native ceres3 ``*_sp.fits`` — 3-D primary HDU cube.
     #   (2) pre-merged 2-D ``[wavelength, flux(, error)]`` primary HDU, as
     #       written by ExoAutomata's ``shared.spectra_prep._rest_frame_single``.
     #   (3) ``SPECTRUM_1D`` binary-table extension with WAVELENGTH / FLUX
     #       (and optionally ERROR) columns — ceres3's own 1-D output, also
     #       the format archive-flow staging writes from MinIO.
+    #   (4) ESO Phase-3 s1d layout — 1-D flux in the primary HDU with
+    #       wavelength derived from CRVAL1 / CDELT1 / NAXIS1. HARPS and
+    #       ESPRESSO archive spectra all use this layout.
     if 'SPECTRUM_1D' in hdul:
         tbl = hdul['SPECTRUM_1D'].data
         wavelength = np.asarray(tbl['WAVELENGTH'], dtype=float)
@@ -58,6 +61,21 @@ def process_spectrum(fits_path, instrument=None, save_1d=False,
             spec = np.vstack([wavelength, flux, error])
         else:
             spec = np.vstack([wavelength, flux])
+    elif (
+        hdul[0].data is not None
+        and hdul[0].data.ndim == 1
+        and 'CRVAL1' in header
+        and 'CDELT1' in header
+    ):
+        flux = np.asarray(hdul[0].data, dtype=float)
+        naxis1 = int(header.get('NAXIS1', flux.size))
+        crval1 = float(header['CRVAL1'])
+        cdelt1 = float(header['CDELT1'])
+        wavelength = crval1 + cdelt1 * np.arange(naxis1, dtype=float)
+        # s1d has no error column — compute_activity's 2-D branch falls
+        # back to sqrt(flux) Poisson errors, which is the right default
+        # for photon-counted ESO P3 data.
+        spec = np.vstack([wavelength, flux])
     else:
         spec = hdul[0].data
 

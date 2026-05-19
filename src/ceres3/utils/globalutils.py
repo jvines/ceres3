@@ -48,22 +48,30 @@ from ceres3.ext import CCF, Marsh
 
 lowess = sm.nonparametric.lowess
 
-global GDATA, P
+global GDATA, GDATA_FLAT, GDATA_XCOLS, P, P_FLAT
 
 
 def _init_pool_worker(shared_data, shared_P=None):
     """Initializer for multiprocessing Pool workers.
 
     Sets global GDATA (and optionally P) once per worker process,
-    avoiding re-pickling large arrays on every task.
+    avoiding re-pickling large arrays on every task. Pre-flattens
+    to contiguous float64 so per-task workers don't redo the copy
+    on every order.
     """
     import signal
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
-    global GDATA, P
-    GDATA = shared_data
+    global GDATA, GDATA_FLAT, GDATA_XCOLS, P, P_FLAT
+    GDATA = np.ascontiguousarray(shared_data, dtype=np.float64)
+    GDATA_FLAT = GDATA.ravel()
+    GDATA_XCOLS = np.arange(GDATA.shape[1])
     if shared_P is not None:
-        P = shared_P
+        P = np.ascontiguousarray(shared_P, dtype=np.float64)
+        P_FLAT = P.ravel()
+    else:
+        P = None
+        P_FLAT = None
 
 
 def _map_with_owned_pool(npools, initargs, func, work_items):
@@ -1310,8 +1318,8 @@ def PCoeff2(pars):
     Marsh_alg = pars[7]
     min_col = pars[8]
     max_col = pars[9]
-    Result      = Marsh.ObtainP((GDATA.flatten()).astype('double'), \
-                                   np.polyval(trace_coeffs,np.arange(GDATA.shape[1])).astype('double'), \
+    Result      = Marsh.ObtainP(GDATA_FLAT, \
+                                   np.polyval(trace_coeffs, GDATA_XCOLS).astype(np.float64, copy=False), \
                                    GDATA.shape[0], GDATA.shape[1], GDATA.shape[1], Aperture, RON, Gain, \
                                    NSigma, S, N, Marsh_alg,min_col,max_col)
     FinalMatrix = np.asarray(Result)                      # After the function, we convert our list to a Numpy array.
@@ -1353,9 +1361,9 @@ def getSpectrum2(pars):
     NCosmic = pars[5]
     min_col = pars[6]
     max_col = pars[7]
-    Result,size = Marsh.ObtainSpectrum( (GDATA.flatten()).astype('double'), \
-                                            np.polyval(trace_coeffs,np.arange(GDATA.shape[1])).astype('double'), \
-                                            P.flatten().astype('double'), GDATA.shape[0],\
+    Result,size = Marsh.ObtainSpectrum( GDATA_FLAT, \
+                                            np.polyval(trace_coeffs, GDATA_XCOLS).astype(np.float64, copy=False), \
+                                            P_FLAT, GDATA.shape[0],\
                                             GDATA.shape[1],GDATA.shape[1],Aperture,RON,\
                                             Gain,S,NCosmic,min_col,max_col)
     FinalMatrix = np.asarray(Result)                      # After the function, we convert our list to a Numpy array.
@@ -1375,8 +1383,8 @@ def getSimpleSpectrum2(pars):
     Aperture = pars[1]
     min_col = pars[2]
     max_col = pars[3]
-    Result   =   Marsh.SimpleExtraction((GDATA.flatten()).astype('double'),\
-                                            np.polyval(trace_coeffs,np.arange(GDATA.shape[1])).astype('double'), \
+    Result   =   Marsh.SimpleExtraction(GDATA_FLAT,\
+                                            np.polyval(trace_coeffs, GDATA_XCOLS).astype(np.float64, copy=False), \
                                             GDATA.shape[0],GDATA.shape[1],\
                                             GDATA.shape[1],Aperture,min_col,max_col)
     FinalMatrix = np.asarray(Result) # After the function, we convert our list to a Numpy array.

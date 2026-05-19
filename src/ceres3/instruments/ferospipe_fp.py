@@ -405,20 +405,14 @@ for fsim in ThAr_Ne_ref:
     # thar_fits_co_simple = dirout + fsim.split('/')[-1][:-4]+'spec.simple.co.fits.S'
     thar_fits_ob = calib_dir + fsim.split('/')[-1][:-4]+'spec.ob.fits.S'
     thar_fits_co = calib_dir + fsim.split('/')[-1][:-4]+'spec.co.fits.S'
-    thar_fits_ob_simple = calib_dir + fsim.split('/')[-1][:-4]+'spec.simple.ob.fits.S'
-    thar_fits_co_simple = calib_dir + fsim.split('/')[-1][:-4]+'spec.simple.co.fits.S'
 
     if ( os.access(thar_fits_ob,os.F_OK) == False ) or \
        ( os.access(thar_fits_co,os.F_OK) == False ) or \
-       ( os.access(thar_fits_ob_simple,os.F_OK) == False ) or \
-       ( os.access(thar_fits_co_simple,os.F_OK) == False ) or \
        (force_thar_extract):
 
         print(f"\t\tNo previous extraction or extraction forced for ThAr file {fsim}, extracting...")
 
         _t0 = time.perf_counter()
-        thar_Ss_ob = GLOBALutils.simple_extraction(dthar,c_ob,ext_aperture,min_extract_col,max_extract_col,npools)
-        thar_Ss_co = GLOBALutils.simple_extraction(dthar,c_co,ext_aperture,min_extract_col,max_extract_col,npools)
         thar_S_ob  = GLOBALutils.optimal_extraction(dthar,P_ob,c_ob,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
         thar_S_co  = GLOBALutils.optimal_extraction(dthar,P_co,c_co,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
         _stage_times['thar_extraction'] = _stage_times.get('thar_extraction', 0) + (time.perf_counter() - _t0)
@@ -428,19 +422,11 @@ for fsim in ThAr_Ne_ref:
             os.remove( thar_fits_ob )
         if (os.access(thar_fits_co,os.F_OK)):
             os.remove( thar_fits_co )
-        if (os.access(thar_fits_ob_simple,os.F_OK)):
-            os.remove( thar_fits_ob_simple )
-        if (os.access(thar_fits_co_simple,os.F_OK)):
-            os.remove( thar_fits_co_simple )
 
         hdu = pyfits.PrimaryHDU( thar_S_ob )
         hdu.writeto( thar_fits_ob, overwrite=True )
         hdu = pyfits.PrimaryHDU( thar_S_co )
         hdu.writeto( thar_fits_co, overwrite=True )
-        hdu = pyfits.PrimaryHDU( thar_Ss_ob )
-        hdu.writeto( thar_fits_ob_simple, overwrite=True )
-        hdu = pyfits.PrimaryHDU( thar_Ss_co )
-        hdu.writeto( thar_fits_co_simple, overwrite=True )
     else:
         print(f"\t\tThAr file {fsim} all ready extracted, loading...")
 
@@ -813,21 +799,15 @@ for fsim in simFP_FP:
     fp_pkl = calib_dir + fsim.split('/')[-1][:-4]+'fplines.pkl'
     fp_fits_ob = calib_dir + fsim.split('/')[-1][:-4]+'spec.ob.fits.S'
     fp_fits_co = calib_dir + fsim.split('/')[-1][:-4]+'spec.co.fits.S'
-    fp_fits_ob_simple = calib_dir + fsim.split('/')[-1][:-4]+'spec.simple.ob.fits.S'
-    fp_fits_co_simple = calib_dir + fsim.split('/')[-1][:-4]+'spec.simple.co.fits.S'
 
     if ( os.access(fp_fits_ob,os.F_OK) == False ) or \
        ( os.access(fp_fits_co,os.F_OK) == False ) or \
        ( os.access(fp_pkl,os.F_OK) == False ) or \
-       ( os.access(fp_fits_ob_simple,os.F_OK) == False ) or \
-       ( os.access(fp_fits_co_simple,os.F_OK) == False ) or \
        (force_thar_extract):
 
         print(f"\t\tNo previous extraction or extraction forced for FP file {fsim}, extracting...")
 
         _t0 = time.perf_counter()
-        fp_Ss_ob = GLOBALutils.simple_extraction(dfp,c_ob,ext_aperture,min_extract_col,max_extract_col,npools)
-        fp_Ss_co = GLOBALutils.simple_extraction(dfp,c_co,ext_aperture,min_extract_col,max_extract_col,npools)
         fp_S_ob  = GLOBALutils.optimal_extraction(dfp,P_ob,c_ob,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
         fp_S_co  = GLOBALutils.optimal_extraction(dfp,P_co,c_co,ext_aperture,RO_thar, GA_thar,S_Marsh,100.,min_extract_col,max_extract_col,npools)
         _stage_times['fp_extraction'] = _stage_times.get('fp_extraction', 0) + (time.perf_counter() - _t0)
@@ -837,19 +817,11 @@ for fsim in simFP_FP:
             os.remove( fp_fits_ob )
         if (os.access(fp_fits_co,os.F_OK)):
             os.remove( fp_fits_co )
-        if (os.access(fp_fits_ob_simple,os.F_OK)):
-            os.remove( fp_fits_ob_simple )
-        if (os.access(fp_fits_co_simple,os.F_OK)):
-            os.remove( fp_fits_co_simple )
 
         hdu = pyfits.PrimaryHDU( fp_S_ob )
         hdu.writeto( fp_fits_ob, overwrite=True )
         hdu = pyfits.PrimaryHDU( fp_S_co )
         hdu.writeto( fp_fits_co, overwrite=True )
-        hdu = pyfits.PrimaryHDU( fp_Ss_ob )
-        hdu.writeto( fp_fits_ob_simple, overwrite=True )
-        hdu = pyfits.PrimaryHDU( fp_Ss_co )
-        hdu.writeto( fp_fits_co_simple, overwrite=True )
 
         if fsim == simFP_FP[0]:
                 fp_lines_co1 = fabryperot.InitialGuess(fp_fits_co, lim1=200, lim2=-200,oi=11,of=25)

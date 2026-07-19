@@ -716,7 +716,10 @@ else:
                             np.ones(len(pdict['All_Wavelengths_co'])), refdct['p1_co'],\
                             minlines=1200, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
                             Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m)
-                p_shifts.append(p_shift)
+                # Unwrap the scalar shift (see the science path below); appending the
+                # raw length-1 array makes np.array(p_shifts) 2-D (N,1), which scipy
+                # >=1.18 splrep rejects with "object too deep for desired array".
+                p_shifts.append(p_shift[0])
                 p_mjds.append(pdict['mjd'])
                 p_shift_ob, pix_centers_ob, orders_ob, wavelengths_ob, I_ob, rms_ms_ob, residuals_ob  = \
                     GLOBALutils.Global_Wav_Solution_vel_shift(pdict['All_Pixel_Centers'],\
@@ -724,7 +727,7 @@ else:
                     np.ones(len(pdict['All_Wavelengths'])), refdct['p1'],\
                     minlines=1200, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
                     Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m)
-                p_shifts_ob.append(p_shift_ob)
+                p_shifts_ob.append(p_shift_ob[0])
                 i+=1
             p_shifts = np.array(p_shifts)
             p_shifts_ob = np.array(p_shifts_ob)

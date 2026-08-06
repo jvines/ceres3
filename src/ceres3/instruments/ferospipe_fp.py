@@ -1202,6 +1202,16 @@ else:
 spec_moon = np.array(spec_moon)
 use_moon  = np.array(use_moon)
 
+# Discard whatever the ThAr reference-selection block above left behind. When it runs
+# it leaves these holding one ThAr-vs-ThAr shift per reference frame, measured against
+# sorted_ThAr_Ne_dates[-1] rather than against the selected refidx — the same quantity
+# in the same units, but on a different zero point, so mixing them into the nightly
+# spline below biases it by an unknown constant. Whether it ran at all depends on
+# whether shifts.pkl happened to be cached, which otherwise makes the drift applied to
+# ObjSky frames differ between a first run and a re-run of the same data.
+p_shifts = []
+p_mjds   = []
+
 for fsim in comp_list:
 
     h        = pyfits.open(fsim)
@@ -1547,8 +1557,15 @@ for fsim in comp_list:
             if (precision > 5):
                 good_quality = False
                 p_shift = 0.
-            p_shifts.append(p_shift)
-            p_mjds.append(mjd)
+            if good_quality:
+                # Only measured shifts may anchor the nightly drift spline built at the
+                # end of this script. The 0. assigned above is a sentinel meaning "could
+                # not measure to better than 5 m/s", not a measurement of zero drift:
+                # feeding it to splrep drags the interpolated drift of every ObjSky frame
+                # of this night toward zero, and nothing downstream records that it
+                # happened.
+                p_shifts.append(p_shift)
+                p_mjds.append(mjd)
 
             spec_co = np.zeros((2,n_useful,len(thar_order)))
             equis = np.arange( len(thar_order) )
@@ -1665,6 +1682,12 @@ for fsim in new_sky:
     mjd,mjd0 = ferosutils.mjd_fromheader(h)
     if len(p_mjds) > 1:
         p_shift  = scipy.interpolate.splev(mjd,tck_shift)
+    elif len(p_mjds) == 1:
+        # Nights where all but one ObjCal frame failed their 5 m/s precision cut used to
+        # reach splev anyway, because the failures were recorded as zero anchors. Now
+        # that they are dropped, hold the one real measurement rather than falling back
+        # to no correction at all — the drift being discarded here is ~100 m/s typical.
+        p_shift = p_shifts[0]
     else:
         p_shift = 0.
     date_obs_sky = h[0].header.get('DATE-OBS', '2000-01-01T00:00:00')

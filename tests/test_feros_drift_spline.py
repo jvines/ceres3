@@ -79,13 +79,13 @@ def _thar_branch(loop: ast.For) -> list[ast.stmt]:
     pytest.fail("ThAr comparison-fibre branch not found in the science loop")
 
 
-def _guarded_by_good_quality(roots: list[ast.stmt], call: ast.Call) -> bool:
-    """True if ``call`` only executes when ``good_quality`` is truthy."""
+def _guarded_by_drift_ok(roots: list[ast.stmt], call: ast.Call) -> bool:
+    """True if ``call`` only executes when ``drift_ok`` is truthy."""
     for root in roots:
         for node in ast.walk(root):
             if not isinstance(node, ast.If):
                 continue
-            if not (isinstance(node.test, ast.Name) and node.test.id == "good_quality"):
+            if not (isinstance(node.test, ast.Name) and node.test.id == "drift_ok"):
                 continue
             if any(call is c for stmt in node.body for c in ast.walk(stmt)):
                 return True
@@ -98,7 +98,7 @@ class TestSentinelNeverAnchorsTheSpline:
     def test_sentinel_still_exists(self, tree):
         """Guard against the gating tests passing because the zeroing was deleted."""
         src = "\n".join(ast.unparse(s) for s in _thar_branch(_science_loop(tree)))
-        assert "good_quality = False" in src
+        assert "drift_ok = False" in src
         assert "p_shift = 0.0" in src  # unparse normalises the `0.` literal
 
     @pytest.mark.parametrize("name", ["p_shifts", "p_mjds"])
@@ -107,9 +107,9 @@ class TestSentinelNeverAnchorsTheSpline:
         calls = _appends_to(branch, name)
         assert calls, f"no {name}.append() left in the ThAr branch"
         for call in calls:
-            assert _guarded_by_good_quality(branch, call), (
+            assert _guarded_by_drift_ok(branch, call), (
                 f"{name}.append() at line {call.lineno} is reachable when "
-                "good_quality is False — a failed measurement would be splined "
+                "drift_ok is False — a failed measurement would be splined "
                 "as a real zero-drift anchor."
             )
 

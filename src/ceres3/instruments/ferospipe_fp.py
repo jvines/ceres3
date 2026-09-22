@@ -91,6 +91,11 @@ Inverse_m          = True
 use_cheby          = True
 
 MRMS               = 90   # max rms in m/s, global wav solution
+# FEROS opts in to floor-bounded culling of the global fits: outliers are culled
+# whenever present (not only when the line list starts above minlines), but never
+# below 300 lines nor below half of the lines the fit started with.
+WAVSOL_CULL_FLOOR    = 300
+WAVSOL_MAX_CULL_FRAC = 0.5
 
 trace_degree       = 4
 Marsh_alg          = 0
@@ -432,15 +437,33 @@ for fsim in ThAr_Ne_ref:
 
 sorted_ThAr_Ne_dates = np.argsort( ThAr_Ne_ref_dates )
 
-c_p2w,c_p2w_c = [],[]
+# Per-ThAr quality of the global wavelength solution, in sorted_ThAr_Ne_dates
+# order; the reference selection below only considers the best grade present.
+thar_quality = []
+thar_wavsol_pkls = []
+wavsol_recomputed = False
 print("\n\tWavelength solution of ThAr calibration spectra:")
 for i in range(len(sorted_ThAr_Ne_dates)):
     index      = sorted_ThAr_Ne_dates[i]
     hd         = pyfits.getheader(ThAr_Ne_ref[index])
     wavsol_pkl = calib_dir + ThAr_Ne_ref[index].split('/')[-1][:-4]+'wavsolpars.pkl'
 
-    if ( os.access(wavsol_pkl,os.F_OK) == False ) or (force_thar_wavcal):
+    pdict = None
+    if os.access(wavsol_pkl,os.F_OK) and not force_thar_wavcal:
+        with open(wavsol_pkl, 'rb') as f:
+            pdict = pickle.load(f, encoding='latin1')
+        if pdict.get('wavsol_version', 1) < ferosutils_fp.WAVSOL_VERSION:
+            # Pre-1.2 pickles store a per-order RMS as 'rms_ms' and fits that were
+            # never culled below minlines: they cannot be graded, so redo them.
+            print(f"\t\t{wavsol_pkl} predates ceres3 1.2 (no quality record), recomputing it")
+            pdict = None
+        else:
+            print(f"\t\tUsing previously computed wavelength solution in file {wavsol_pkl}")
+
+    if pdict is None:
         print(f"\t\tComputing wavelength solution of ThAr file {ThAr_Ne_ref[index]}")
+        wavsol_recomputed = True
+        c_p2w, c_p2w_c = [], []    # per-frame order-by-order solutions
 
         hthar        = pyfits.open( ThAr_Ne_ref[index] )
         mjd, mjd0    = ferosutils.mjd_fromheader( hthar )
@@ -463,11 +486,14 @@ for i in range(len(sorted_ThAr_Ne_dates)):
         All_Intensities   = np.array([])
         All_residuals   = np.array([])
 
-        if thar_S_ob.shape[0] < o0 + n_useful:
-            _old_n = n_useful
-            n_useful = thar_S_ob.shape[0] - o0
-            _pipeline_warnings.append(f"ThAr order count clamped: {thar_S_ob.shape[0]} orders in ThAr, using {n_useful} of {_old_n}")
-            print(f"WARNING: ThAr order count clamped from {_old_n} to {n_useful} ({thar_S_ob.shape[0]} orders, o0={o0})")
+        if min(thar_S_ob.shape[0], thar_S_co.shape[0]) < o0 + n_useful:
+            # Silently calibrating fewer orders shifts the line lists onto the
+            # wrong orders; an extraction that disagrees with the trace is fatal.
+            raise ferosutils_fp.FerosTraceError(
+                f"FEROS trace labelling failed: ThAr {ThAr_Ne_ref[index].split('/')[-1]} was extracted "
+                f"with {thar_S_ob.shape[0]}/{thar_S_co.shape[0]} object/comparison orders but orders "
+                f"{o0}..{o0+n_useful-1} are needed; delete its spec.*.fits.S in {calib_dir} and re-run "
+                "the calibration (-is_calib)")
 
         wavss   =[]
         orss    = []
@@ -487,7 +513,7 @@ for i in range(len(sorted_ThAr_Ne_dates)):
             thar_order      = thar_order_orig - bkg
 
             coeffs_pix2wav, coeffs_pix2sigma, pixel_centers, wavelengths,\
-            rms_ms, residuals, centroids, sigmas, intensities =\
+            rms_ms_order, residuals, centroids, sigmas, intensities =\
                     GLOBALutils.Initial_Wav_Calibration(order_dir+'order_'+\
                     order_s+thar_end, thar_order, order, wei, rmsmax=100, \
                     minlines=30,FixEnds=False,Dump_Argon=dumpargon,\
@@ -540,11 +566,14 @@ for i in range(len(sorted_ThAr_Ne_dates)):
         """
         p0    = np.zeros( npar_wsol )
         p0[0] =  (16+OO0) * Global_ZP
+        fit_info_ob = {}
         p1, G_pix, G_ord, G_wav, II, rms_ms, G_res = \
             GLOBALutils.Fit_Global_Wav_Solution(All_Pixel_Centers, All_Wavelengths, All_Orders,\
                                                 np.ones(All_Intensities.shape), p0, Cheby=use_cheby,\
                                                 maxrms=MRMS, Inv=Inverse_m,minlines=1200,order0=OO0, \
-                                                ntotal=n_useful,npix=len(thar_order),nx=ncoef_x,nm=ncoef_m)
+                                                ntotal=n_useful,npix=len(thar_order),nx=ncoef_x,nm=ncoef_m,\
+                                                cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC,\
+                                                info=fit_info_ob)
 
         """
         ejxx = np.arange(4096)
@@ -582,7 +611,7 @@ for i in range(len(sorted_ThAr_Ne_dates)):
             thar_order      = thar_order_orig - bkg
 
             coeffs_pix2wav, coeffs_pix2sigma, pixel_centers, wavelengths,\
-            rms_ms, residuals, centroids, sigmas, intensities =\
+            rms_ms_order, residuals, centroids, sigmas, intensities =\
                      GLOBALutils.Initial_Wav_Calibration(order_dir+'order_'+\
                      order_s+thar_end, thar_order, order, wei, rmsmax=100, \
                      minlines=30,FixEnds=False,Dump_Argon=dumpargon,\
@@ -598,11 +627,14 @@ for i in range(len(sorted_ThAr_Ne_dates)):
             All_residuals_co     = np.append( All_residuals_co, residuals )
             order+=1
 
+        fit_info_co = {}
         p1_co, G_pix_co, G_ord_co, G_wav_co, II_co, rms_ms_co, G_res_co = \
             GLOBALutils.Fit_Global_Wav_Solution(All_Pixel_Centers_co, All_Wavelengths_co, All_Orders_co,\
                                                 np.ones(All_Intensities_co.shape), p1, Cheby=use_cheby,\
                                                 maxrms=MRMS, Inv=Inverse_m,minlines=1200,order0=OO0, \
-                                                ntotal=n_useful,npix=len(thar_order),nx=ncoef_x,nm=ncoef_m)
+                                                ntotal=n_useful,npix=len(thar_order),nx=ncoef_x,nm=ncoef_m,\
+                                                cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC,\
+                                                info=fit_info_co)
 
         #for io in range(int(G_ord_co.min()),int(G_ord_co.max()+1),1):
         #    I = np.where(G_ord_co == io)[0]
@@ -637,6 +669,10 @@ for i in range(len(sorted_ThAr_Ne_dates)):
 
         # end COMPARISON orders.
 
+        # 'rms_ms' / 'rms_ms_co' are the global RMS (m/s) of the object / comparison
+        # fits; 'quality' grades the pair for the reference selection below.
+        wsol_quality_rec = ferosutils_fp.wavsol_quality_record(len(II), len(II_co), rms_ms, rms_ms_co,
+                                                               fit_info_ob, fit_info_co)
         pdict = {'c_p2w':c_p2w,'p1':p1,'mjd':mjd, 'G_pix':G_pix, 'G_ord':G_ord,\
                 'G_wav':G_wav, 'II':II, 'rms_ms':rms_ms,'G_res':G_res,\
                 'All_Centroids':All_Centroids, 'All_Wavelengths':All_Wavelengths,\
@@ -645,15 +681,17 @@ for i in range(len(sorted_ThAr_Ne_dates)):
                 'G_pix_co':G_pix_co, 'G_ord_co':G_ord_co, 'G_wav_co':G_wav_co,\
                 'II_co':II_co, 'rms_ms_co':rms_ms_co, 'G_res_co':G_res_co,\
                 'All_Centroids_co':All_Centroids_co,'All_Wavelengths_co':All_Wavelengths_co,\
-                'All_Orders_co':All_Orders_co, 'All_Pixel_Centers_co':All_Pixel_Centers_co}
+                'All_Orders_co':All_Orders_co, 'All_Pixel_Centers_co':All_Pixel_Centers_co,\
+                'wavsol_version':ferosutils_fp.WAVSOL_VERSION, 'quality':wsol_quality_rec,\
+                'fit_info_ob':fit_info_ob, 'fit_info_co':fit_info_co,\
+                'o0':o0, 'order0':OO0, 'n_useful':n_useful, 'npix':len(thar_order)}
 
         with open(wavsol_pkl, 'wb') as f:
             pickle.dump( pdict, f )
 
-    else:
-        print(f"\t\tUsing previously computed wavelength solution in file {wavsol_pkl}")
-        with open(wavsol_pkl, 'rb') as f:
-            pdict = pickle.load(f, encoding='latin1')
+    thar_quality.append(ferosutils_fp.wavsol_quality(pdict))
+    thar_wavsol_pkls.append(wavsol_pkl)
+    print(f"\t\t\tWavelength solution: {ferosutils_fp.describe_quality(thar_quality[-1])}")
 
 #print gfd
 ThAr_all       = np.hstack(( np.array(ThArNe_ref), np.array(ThAr_Ne_ref) ))
@@ -671,26 +709,38 @@ if ref_thar != None:
         wavsol_dict = pickle.load(f, encoding='latin1')
 
 else:
-    force_shift = False
+    # Only the best grade present among this night's ThArs may become the
+    # reference ('good', else 'degraded'; if all are 'bad', the smallest RMS).
+    thar_grades = [q['grade'] for q in thar_quality]
+    thar_rms    = [max(q['rms_ob'], q['rms_co']) if None not in (q['rms_ob'], q['rms_co']) else None
+                   for q in thar_quality]
+    ref_tier    = ferosutils_fp.reference_tier(thar_grades)
+    # The cached metric is only valid for the solutions it was computed from.
+    force_shift = wavsol_recomputed
     if os.access(calib_dir+'shifts.pkl',os.F_OK):
     # if os.access(dirout+'shifts.pkl',os.F_OK):
         with open(calib_dir+'shifts.pkl', 'rb') as f:
             dct_shfts = pickle.load(f, encoding='latin1')
         # dct_shfts = pickle.load(open(dirout+'shifts.pkl','rb'), encoding='latin1')
-        for fl in ThAr_Ne_ref:
-            if not fl in dct_shfts['names']:
+        if dct_shfts.get('version', 1) < ferosutils_fp.SHIFTS_VERSION:
+            # pre-1.2 cache: selected without grades, from ungraded solutions
+            force_shift = True
+        cached_grades = dict(zip(list(dct_shfts.get('names', [])), list(dct_shfts.get('grades', []))))
+        for j in range(len(sorted_ThAr_Ne_dates)):
+            fl = ThAr_Ne_ref[sorted_ThAr_Ne_dates[j]]
+            if not fl in cached_grades or cached_grades[fl] != thar_grades[j]:
                 force_shift = True
-                dct_shfts = {}
                 break
+        if force_shift:
+            dct_shfts = {}
     else:
         force_shift = True
     #"""
     print(len(ThAr_all))
+    vec_dif = None
     if force_shift and len(sorted_ThAr_Ne_dates)>6:
         f, axarr = plt.subplots(len(sorted_ThAr_Ne_dates), sharex=True,figsize=(5, 30))
         Thar_shifts_out = dirout + 'ThAr_Ne_shifts.dat'
-        difs = 0
-        mindif = 9999999999
         j = 0
         dct_shft = {}
         vec_dif = []
@@ -698,6 +748,13 @@ else:
         while j < len(sorted_ThAr_Ne_dates):
             fref   = ThAr_Ne_ref[sorted_ThAr_Ne_dates[j]]
             vec_nam.append(fref)
+            if ref_tier == 'bad' or thar_grades[j] != ref_tier:
+                # Not eligible as the reference: skip its O(N) shift fits.
+                vec_dif.append(np.nan)
+                axarr[j].set_title(fref.split('/')[-1]+' not a candidate (grade '+thar_grades[j]+')')
+                print(j, 'not a candidate, grade', thar_grades[j])
+                j+=1
+                continue
             with open(calib_dir + fref.split('/')[-1][:-4]+'wavsolpars.pkl', 'rb') as fpkl:
                 refdct = pickle.load( fpkl, encoding='latin1' )
             # refdct = pickle.load( open(dirout + fref.split('/')[-1][:-4]+'wavsolpars.pkl','rb' ), encoding='latin1' )
@@ -706,27 +763,37 @@ else:
             p_mjds   = []
             i = 0
             while i < len(sorted_ThAr_Ne_dates):
+                if thar_grades[i] != ref_tier:
+                    # The metric is taken among the eligible frames only: a worse
+                    # frame's misidentified lines would have to be culled one by one
+                    # in every shift fit, and only add noise to the mean.
+                    i+=1
+                    continue
                 fsim  = ThAr_Ne_ref[sorted_ThAr_Ne_dates[i]]
                 with open(calib_dir + fsim.split('/')[-1][:-4]+'wavsolpars.pkl', 'rb') as fpkl:
                     pdict = pickle.load( fpkl, encoding='latin1' )
                 # pdict = pickle.load( open(dirout + fsim.split('/')[-1][:-4]+'wavsolpars.pkl','rb' ), encoding='latin1' )
+                shift_info_co = {}
                 p_shift, pix_centers, orders, wavelengths, I, rms_ms, residuals  = \
                             GLOBALutils.Global_Wav_Solution_vel_shift(pdict['All_Pixel_Centers_co'],\
                             pdict['All_Wavelengths_co'], pdict['All_Orders_co'],\
                             np.ones(len(pdict['All_Wavelengths_co'])), refdct['p1_co'],\
                             minlines=1200, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
-                            Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m)
+                            Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m,\
+                            cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC, info=shift_info_co)
                 # Unwrap the scalar shift (see the science path below); appending the
                 # raw length-1 array makes np.array(p_shifts) 2-D (N,1), which scipy
                 # >=1.18 splrep rejects with "object too deep for desired array".
                 p_shifts.append(p_shift[0])
                 p_mjds.append(pdict['mjd'])
+                shift_info_ob = {}
                 p_shift_ob, pix_centers_ob, orders_ob, wavelengths_ob, I_ob, rms_ms_ob, residuals_ob  = \
                     GLOBALutils.Global_Wav_Solution_vel_shift(pdict['All_Pixel_Centers'],\
                     pdict['All_Wavelengths'], pdict['All_Orders'],\
                     np.ones(len(pdict['All_Wavelengths'])), refdct['p1'],\
                     minlines=1200, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
-                    Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m)
+                    Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m,\
+                    cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC, info=shift_info_ob)
                 p_shifts_ob.append(p_shift_ob[0])
                 i+=1
             p_shifts = np.array(p_shifts)
@@ -736,36 +803,30 @@ else:
             axarr[j].plot(p_shifts-p_shifts_ob)
             axarr[j].axhline(0)
             axarr[j].set_title(fref.split('/')[-1]+'offset: '+str(np.around(dif,5)))
-            if dif < mindif:
-                mindif = dif
-                difs = j
             print(j, dif)
             j+=1
+        dct_shfts['version']=ferosutils_fp.SHIFTS_VERSION
         dct_shfts['vals']=np.array(vec_dif)
         dct_shfts['names']=np.array(vec_nam)
+        dct_shfts['grades']=np.array(thar_grades)
 
-        refidx = difs
         p_shifts = list(p_shifts)
         plt.savefig(fname,format='pdf')
 
+    elif len(sorted_ThAr_Ne_dates)>6:
+        # Cached metric, re-aligned to sorted_ThAr_Ne_dates.
+        cached_vals = dict(zip(list(dct_shfts['names']), list(dct_shfts['vals'])))
+        vec_dif = [cached_vals[ThAr_Ne_ref[sorted_ThAr_Ne_dates[j]]] for j in range(len(sorted_ThAr_Ne_dates))]
+
+    refidx, ref_grade = ferosutils_fp.select_reference(thar_grades, vec_dif, thar_rms)
+
+    if force_shift and len(sorted_ThAr_Ne_dates)>6:
+        dct_shfts['ref_name']  = ThAr_Ne_ref[sorted_ThAr_Ne_dates[refidx]]
+        dct_shfts['ref_grade'] = ref_grade
         with open(dirout+'shifts.pkl', 'wb') as fpkl:
             pickle.dump(dct_shfts, fpkl)
 
-    elif len(sorted_ThAr_Ne_dates)>6:
-        with open(calib_dir+'shifts.pkl', 'rb') as fpkl:
-            dct_shfts = pickle.load(fpkl, encoding='latin1')
-        # dct_shfts = pickle.load(open(dirout+'shifts.pkl','rb'), encoding='latin1')
-        I = np.argmin(dct_shfts['vals'])
-        goodname = dct_shfts['names'][I]
-        j = 0
-        while j < len(sorted_ThAr_Ne_dates):
-            if ThAr_Ne_ref[sorted_ThAr_Ne_dates[j]] == goodname:
-                refidx = j
-            j+=1
-    else:
-        refidx = 0
-
-    print(f'This: {ThAr_Ne_ref[sorted_ThAr_Ne_dates[refidx]]}')
+    print(f'This: {ThAr_Ne_ref[sorted_ThAr_Ne_dates[refidx]]} (grade {ref_grade})')
     #print gfds
     indice = sorted_ThAr_Ne_dates[refidx]
     # pkl_wsol = dirout + ThAr_Ne_ref[indice].split('/')[-1][:-4]+'wavsolpars.pkl'
@@ -773,6 +834,28 @@ else:
     print(f'\t\tLoading wavelength solution from {pkl_wsol}')
     with open(pkl_wsol, 'rb') as fpkl:
         wavsol_dict = pickle.load(fpkl, encoding='latin1')
+
+# Quality of the reference every science frame of this run is calibrated against
+# (the -ref_thar pickle is graded the same way, whatever its version).
+ref_quality  = ferosutils_fp.wavsol_quality(wavsol_dict)
+ref_pkl_path = os.path.abspath(pkl_wsol)
+calib_night  = os.path.basename(calib_dir.rstrip('/'))
+if calib_night.endswith('_red'):
+    calib_night = calib_night[:-4]
+print(f"\t\tReference wavelength solution: {ferosutils_fp.describe_quality(ref_quality)}")
+if ref_quality['grade'] != 'good':
+    if ref_thar != None:
+        _pipeline_warnings.append(
+            f"Reference ThAr {os.path.basename(ref_thar)} given with -ref_thar is not healthy: "
+            f"{ferosutils_fp.describe_quality(ref_quality)}; RVs flagged (GOOD QUALITY WAVSOL = F) - "
+            "pass the wavsolpars.pkl of a night whose calibration assesses healthy")
+    else:
+        _pipeline_warnings.append(
+            f"No healthy reference ThAr on {calib_night}: best has "
+            f"{ferosutils_fp.describe_quality(ref_quality)}; RVs flagged (GOOD QUALITY WAVSOL = F) - "
+            "reduce against a healthy night's reference with -ref_thar")
+    print(f"WARNING: {_pipeline_warnings[-1]}")
+drift_failed_frames = []    # science frames whose drift could not be measured to 5 m/s
 
 print('\n\tExtraction of FP calibration frames:')
 
@@ -970,12 +1053,14 @@ if len(simFP_FP)>0:
         fsim  = ThAr_Ne_ref[sorted_ThAr_Ne_dates[i]]
         with open(dirout + fsim.split('/')[-1][:-4]+'wavsolpars.pkl', 'rb') as fpkl:
             pdict = pickle.load( fpkl, encoding='latin1' )
+        fp_shift_info = {}
         shift, pix_centers, orders, wavelengths, I, rms_ms, residuals  = \
                     GLOBALutils.Global_Wav_Solution_vel_shift(pdict['All_Pixel_Centers_co'],\
                     pdict['All_Wavelengths_co'], pdict['All_Orders_co'],\
                     np.ones(len(pdict['All_Wavelengths_co'])), wavsol_dict['p1_co'],\
                     minlines=1200, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
-                    Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m)
+                    Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m,\
+                    cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC, info=fp_shift_info)
         precision = rms_ms/np.sqrt(len(I))
         thar_errs.append(precision)
         thar_shifts.append(299792458.*shift[0]/1e6)
@@ -1041,12 +1126,14 @@ if len(simFP_FP)>0:
         fsim  = ThAr_Ne_ref[sorted_ThAr_Ne_dates[i]]
         with open(dirout + fsim.split('/')[-1][:-4]+'wavsolpars.pkl', 'rb') as fpkl:
             pdict = pickle.load( fpkl, encoding='latin1' )
+        fp_shift_info = {}
         shift, pix_centers, orders, wavelengths, I, rms_ms, residuals  = \
                     GLOBALutils.Global_Wav_Solution_vel_shift(pdict['All_Pixel_Centers_co'],\
                     pdict['All_Wavelengths_co'], pdict['All_Orders_co'],\
                     np.ones(len(pdict['All_Wavelengths_co'])), wavsol_dict['p1_co'],\
                     minlines=1200, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
-                    Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m)
+                    Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m,\
+                    cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC, info=fp_shift_info)
         precision = rms_ms/np.sqrt(len(I))
         thar_errs.append(precision)
         thar_shifts.append(299792458.*shift[0]/1e6)
@@ -1487,10 +1574,17 @@ for fsim in comp_list:
             fp_error_co = np.sqrt(np.var(tdrifts_co))/np.sqrt(float(len(tdrifts_co)))
             print(f'\t\t\tFP shift = {fp_shift_co} +- {fp_error_co} m/s')
             p_shift = 1e6*fp_shift_co/299792458.
-            good_quality = True
+            drift_ok = True
             if fp_error_co > 5:
-                good_quality = False
+                drift_ok = False
                 p_shift = 0.
+                drift_failed_frames.append(fsim.split('/')[-1])
+
+            # WAVSOL is good only if both the drift and the nightly reference are.
+            for _k, _v, _c in ferosutils_fp.wavsol_quality_cards(drift_ok, ref_quality, fp_error_co):
+                hdu = GLOBALutils.update_header(hdu, _k, _v, _c)
+            hdu = GLOBALutils.update_header(hdu,'HIERARCH WAVSOL ERROR', fp_error_co, '[m/s]')
+            hdu = GLOBALutils.update_header(hdu,'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
 
         elif comp_type == 'WAVE' or (ferosutils_fp.hasFP(h) and ref_fp_pkl is None):
             if ferosutils_fp.hasFP(h) and ref_fp_pkl is None:
@@ -1510,7 +1604,10 @@ for fsim in comp_list:
             All_residuals_co     = np.array([])
 
             if lines_thar_co.shape[0] < o0 + n_useful:
-                n_useful = lines_thar_co.shape[0] - o0
+                raise ferosutils_fp.FerosTraceError(
+                    f"FEROS trace labelling failed: {fsim.split('/')[-1]} was extracted with "
+                    f"{lines_thar_co.shape[0]} comparison orders but orders {o0}..{o0+n_useful-1} "
+                    f"are needed; delete its spec.*.fits.S in {dirout} and reduce it again")
             order = o0
             c_p2w_c = []
             shifts = []
@@ -1526,7 +1623,7 @@ for fsim in comp_list:
                 thar_order      = thar_order_orig - bkg
 
                 coeffs_pix2wav, coeffs_pix2sigma, pixel_centers, wavelengths,\
-                rms_ms, residuals, centroids, sigmas, intensities =\
+                rms_ms_order, residuals, centroids, sigmas, intensities =\
                      GLOBALutils.Initial_Wav_Calibration(order_dir+'order_'+\
                      order_s+thar_end, thar_order, order, wei, rmsmax=100, \
                      minlines=30,FixEnds=False,Dump_Argon=dumpargon,\
@@ -1540,24 +1637,32 @@ for fsim in comp_list:
                 All_residuals_co     = np.append( All_residuals_co, residuals )
                 order+=1
 
+            sci_fit_info = {}
             p1_co, G_pix_co, G_ord_co, G_wav_co, II_co, rms_ms_co, G_res_co = \
                         GLOBALutils.Fit_Global_Wav_Solution(All_Pixel_Centers_co, All_Wavelengths_co, All_Orders_co,\
                                                 np.ones(All_Intensities_co.shape), wsol_dict['p1_co'], Cheby=use_cheby,\
                                                 maxrms=MRMS, Inv=Inverse_m,minlines=1200,order0=OO0, \
-                                                ntotal=n_useful,npix=len(thar_order),nx=ncoef_x,nm=ncoef_m)
+                                                ntotal=n_useful,npix=len(thar_order),nx=ncoef_x,nm=ncoef_m,\
+                                                cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC,\
+                                                info=sci_fit_info)
 
+            sci_shift_info = {}
             p_shift, pix_centers, orders, wavelengths, I, rms_ms, residuals  = \
                 GLOBALutils.Global_Wav_Solution_vel_shift(All_Pixel_Centers_co,\
                 All_Wavelengths_co, All_Orders_co, np.ones(len(All_Wavelengths_co)), wsol_dict['p1_co'],\
                 minlines=1000, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
-                Cheby=use_cheby, Inv=Inverse_m, npix=len(thar_order),nx=ncoef_x,nm=ncoef_m)
+                Cheby=use_cheby, Inv=Inverse_m, npix=len(thar_order),nx=ncoef_x,nm=ncoef_m,\
+                cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC, info=sci_shift_info)
             precision    = rms_ms/np.sqrt(len(I))
             p_shift = p_shift[0]
-            good_quality = True
+            # The zeroing below is tied to the drift precision only; the quality of
+            # the reference is reported separately in the header cards.
+            drift_ok = True
             if (precision > 5):
-                good_quality = False
+                drift_ok = False
                 p_shift = 0.
-            if good_quality:
+                drift_failed_frames.append(fsim.split('/')[-1])
+            if drift_ok:
                 # Only measured shifts may anchor the nightly drift spline built at the
                 # end of this script. The 0. assigned above is a sentinel meaning "could
                 # not measure to better than 5 m/s", not a measurement of zero drift:
@@ -1585,7 +1690,9 @@ for fsim in comp_list:
             hdu = GLOBALutils.update_header(hdu,'HIERARCH THAR CO',fsim.split('/')[-1][:-5]+'_sp_co.fits')
 
 
-            hdu = GLOBALutils.update_header(hdu,'HIERARCH GOOD QUALITY WAVSOL', good_quality)
+            # WAVSOL is good only if both the drift and the nightly reference are.
+            for _k, _v, _c in ferosutils_fp.wavsol_quality_cards(drift_ok, ref_quality, precision):
+                hdu = GLOBALutils.update_header(hdu, _k, _v, _c)
             hdu = GLOBALutils.update_header(hdu,'HIERARCH WAVSOL ERROR', precision, '[m/s]')
             hdu = GLOBALutils.update_header(hdu,'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
         # Apply new wavelength solution including barycentric correction
@@ -1690,13 +1797,33 @@ for fsim in new_sky:
         p_shift = p_shifts[0]
     else:
         p_shift = 0.
+    p_shift = float(p_shift)
+    # An ObjSky frame has no simultaneous lamp: its drift is interpolated from the
+    # night's measured ObjCal drifts, and is only as good as having any of them.
+    drift_ok = len(p_mjds) >= 1
     date_obs_sky = h[0].header.get('DATE-OBS', '2000-01-01T00:00:00')
     time_part = date_obs_sky[11:].replace(':', '-')
     fout = f'proc/{obname}_{date_obs_sky[:4]}{date_obs_sky[5:7]}{date_obs_sky[8:10]}_UT{time_part}_sp.fits'
     hdu = pyfits.open(dirout + fout,mode='update')
     hdu[0].data[0,:,:] *= (1.0 + 1.0e-6*p_shift)
+    for _k, _v, _c in ferosutils_fp.wavsol_quality_cards(drift_ok, ref_quality):
+        hdu[0] = GLOBALutils.update_header(hdu[0], _k, _v, _c)
+    hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
     hdu.flush()
     hdu.close()
+
+if len(new_sky) > 0 and len(p_mjds) == 0:
+    _pipeline_warnings.append(
+        f"{len(new_sky)} ObjSky frame(s) on {os.path.basename(dirout.rstrip('/')).replace('_red', '')} got no drift correction: "
+        "no ObjCal frame of the night measured its drift to 5 m/s; their RVs are flagged "
+        "(GOOD QUALITY DRIFT = F) - check the simultaneous ThAr exposure levels")
+    print(f"WARNING: {_pipeline_warnings[-1]}")
+if len(drift_failed_frames) > 0:
+    _pipeline_warnings.append(
+        f"{len(drift_failed_frames)} of {len(new_list)} ObjCal frame(s) could not measure their drift "
+        f"to 5 m/s (e.g. {drift_failed_frames[0]}); their RVs are flagged (GOOD QUALITY DRIFT = F) "
+        "and they do not anchor the ObjSky drift interpolation")
+    print(f"WARNING: {_pipeline_warnings[-1]}")
 
 print("\n\tSarting with the post-processing:")
 #JustExtract = True
@@ -2016,6 +2143,18 @@ if (not JustExtract):
         hdu.close()
 
 f_res.close()
+
+if is_calib:
+    # Machine-readable verdict on this calibration night, read back by
+    # ferosutils_fp.assess_calibration() (ExoAutomata decides from it whether
+    # science can be reduced against this night or needs another's -ref_thar).
+    calib_quality = ferosutils_fp.calib_quality_report(calib_dir, thar_pkls=thar_wavsol_pkls,
+                                                       reference_pkl=ref_pkl_path, trace_dict=trace_dict,
+                                                       warnings=_pipeline_warnings)
+    _cq_path = ferosutils_fp.write_calib_quality(dirout, calib_quality)
+    print(f"\n\tCalibration quality: {'healthy' if calib_quality['healthy'] else 'NOT healthy'} -> {_cq_path}")
+    for _r in calib_quality['reasons']:
+        print(f"\t\t- {_r}")
 
 _stage_times['total'] = time.perf_counter() - _t_pipeline_start
 print("\n\t[timing] Stage summary (seconds):")

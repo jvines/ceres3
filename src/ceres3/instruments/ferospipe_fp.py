@@ -1817,11 +1817,13 @@ if len(new_sky) > 0 and len(p_mjds) == 0:
         f"{len(new_sky)} ObjSky frame(s) on {os.path.basename(dirout.rstrip('/')).replace('_red', '')} got no drift correction: "
         "no ObjCal frame of the night measured its drift to 5 m/s; their RVs are flagged "
         "(GOOD QUALITY DRIFT = F) - check the simultaneous ThAr exposure levels")
+    print(f"WARNING: {_pipeline_warnings[-1]}")
 if len(drift_failed_frames) > 0:
     _pipeline_warnings.append(
         f"{len(drift_failed_frames)} of {len(new_list)} ObjCal frame(s) could not measure their drift "
         f"to 5 m/s (e.g. {drift_failed_frames[0]}); their RVs are flagged (GOOD QUALITY DRIFT = F) "
         "and they do not anchor the ObjSky drift interpolation")
+    print(f"WARNING: {_pipeline_warnings[-1]}")
 
 print("\n\tSarting with the post-processing:")
 #JustExtract = True

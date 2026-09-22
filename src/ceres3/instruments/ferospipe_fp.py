@@ -706,26 +706,38 @@ if ref_thar != None:
         wavsol_dict = pickle.load(f, encoding='latin1')
 
 else:
-    force_shift = False
+    # Only the best grade present among this night's ThArs may become the
+    # reference ('good', else 'degraded'; if all are 'bad', the smallest RMS).
+    thar_grades = [q['grade'] for q in thar_quality]
+    thar_rms    = [max(q['rms_ob'], q['rms_co']) if None not in (q['rms_ob'], q['rms_co']) else None
+                   for q in thar_quality]
+    ref_tier    = ferosutils_fp.reference_tier(thar_grades)
+    # The cached metric is only valid for the solutions it was computed from.
+    force_shift = wavsol_recomputed
     if os.access(calib_dir+'shifts.pkl',os.F_OK):
     # if os.access(dirout+'shifts.pkl',os.F_OK):
         with open(calib_dir+'shifts.pkl', 'rb') as f:
             dct_shfts = pickle.load(f, encoding='latin1')
         # dct_shfts = pickle.load(open(dirout+'shifts.pkl','rb'), encoding='latin1')
-        for fl in ThAr_Ne_ref:
-            if not fl in dct_shfts['names']:
+        if dct_shfts.get('version', 1) < ferosutils_fp.SHIFTS_VERSION:
+            # pre-1.2 cache: selected without grades, from ungraded solutions
+            force_shift = True
+        cached_grades = dict(zip(list(dct_shfts.get('names', [])), list(dct_shfts.get('grades', []))))
+        for j in range(len(sorted_ThAr_Ne_dates)):
+            fl = ThAr_Ne_ref[sorted_ThAr_Ne_dates[j]]
+            if not fl in cached_grades or cached_grades[fl] != thar_grades[j]:
                 force_shift = True
-                dct_shfts = {}
                 break
+        if force_shift:
+            dct_shfts = {}
     else:
         force_shift = True
     #"""
     print(len(ThAr_all))
+    vec_dif = None
     if force_shift and len(sorted_ThAr_Ne_dates)>6:
         f, axarr = plt.subplots(len(sorted_ThAr_Ne_dates), sharex=True,figsize=(5, 30))
         Thar_shifts_out = dirout + 'ThAr_Ne_shifts.dat'
-        difs = 0
-        mindif = 9999999999
         j = 0
         dct_shft = {}
         vec_dif = []
@@ -733,6 +745,13 @@ else:
         while j < len(sorted_ThAr_Ne_dates):
             fref   = ThAr_Ne_ref[sorted_ThAr_Ne_dates[j]]
             vec_nam.append(fref)
+            if ref_tier == 'bad' or thar_grades[j] != ref_tier:
+                # Not eligible as the reference: skip its O(N) shift fits.
+                vec_dif.append(np.nan)
+                axarr[j].set_title(fref.split('/')[-1]+' not a candidate (grade '+thar_grades[j]+')')
+                print(j, 'not a candidate, grade', thar_grades[j])
+                j+=1
+                continue
             with open(calib_dir + fref.split('/')[-1][:-4]+'wavsolpars.pkl', 'rb') as fpkl:
                 refdct = pickle.load( fpkl, encoding='latin1' )
             # refdct = pickle.load( open(dirout + fref.split('/')[-1][:-4]+'wavsolpars.pkl','rb' ), encoding='latin1' )
@@ -741,27 +760,37 @@ else:
             p_mjds   = []
             i = 0
             while i < len(sorted_ThAr_Ne_dates):
+                if thar_grades[i] != ref_tier:
+                    # The metric is taken among the eligible frames only: a worse
+                    # frame's misidentified lines would have to be culled one by one
+                    # in every shift fit, and only add noise to the mean.
+                    i+=1
+                    continue
                 fsim  = ThAr_Ne_ref[sorted_ThAr_Ne_dates[i]]
                 with open(calib_dir + fsim.split('/')[-1][:-4]+'wavsolpars.pkl', 'rb') as fpkl:
                     pdict = pickle.load( fpkl, encoding='latin1' )
                 # pdict = pickle.load( open(dirout + fsim.split('/')[-1][:-4]+'wavsolpars.pkl','rb' ), encoding='latin1' )
+                shift_info_co = {}
                 p_shift, pix_centers, orders, wavelengths, I, rms_ms, residuals  = \
                             GLOBALutils.Global_Wav_Solution_vel_shift(pdict['All_Pixel_Centers_co'],\
                             pdict['All_Wavelengths_co'], pdict['All_Orders_co'],\
                             np.ones(len(pdict['All_Wavelengths_co'])), refdct['p1_co'],\
                             minlines=1200, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
-                            Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m)
+                            Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m,\
+                            cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC, info=shift_info_co)
                 # Unwrap the scalar shift (see the science path below); appending the
                 # raw length-1 array makes np.array(p_shifts) 2-D (N,1), which scipy
                 # >=1.18 splrep rejects with "object too deep for desired array".
                 p_shifts.append(p_shift[0])
                 p_mjds.append(pdict['mjd'])
+                shift_info_ob = {}
                 p_shift_ob, pix_centers_ob, orders_ob, wavelengths_ob, I_ob, rms_ms_ob, residuals_ob  = \
                     GLOBALutils.Global_Wav_Solution_vel_shift(pdict['All_Pixel_Centers'],\
                     pdict['All_Wavelengths'], pdict['All_Orders'],\
                     np.ones(len(pdict['All_Wavelengths'])), refdct['p1'],\
                     minlines=1200, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
-                    Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m)
+                    Cheby=use_cheby, Inv=Inverse_m, npix=Flat.shape[1],nx=ncoef_x,nm=ncoef_m,\
+                    cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC, info=shift_info_ob)
                 p_shifts_ob.append(p_shift_ob[0])
                 i+=1
             p_shifts = np.array(p_shifts)
@@ -771,36 +800,30 @@ else:
             axarr[j].plot(p_shifts-p_shifts_ob)
             axarr[j].axhline(0)
             axarr[j].set_title(fref.split('/')[-1]+'offset: '+str(np.around(dif,5)))
-            if dif < mindif:
-                mindif = dif
-                difs = j
             print(j, dif)
             j+=1
+        dct_shfts['version']=ferosutils_fp.SHIFTS_VERSION
         dct_shfts['vals']=np.array(vec_dif)
         dct_shfts['names']=np.array(vec_nam)
+        dct_shfts['grades']=np.array(thar_grades)
 
-        refidx = difs
         p_shifts = list(p_shifts)
         plt.savefig(fname,format='pdf')
 
+    elif len(sorted_ThAr_Ne_dates)>6:
+        # Cached metric, re-aligned to sorted_ThAr_Ne_dates.
+        cached_vals = dict(zip(list(dct_shfts['names']), list(dct_shfts['vals'])))
+        vec_dif = [cached_vals[ThAr_Ne_ref[sorted_ThAr_Ne_dates[j]]] for j in range(len(sorted_ThAr_Ne_dates))]
+
+    refidx, ref_grade = ferosutils_fp.select_reference(thar_grades, vec_dif, thar_rms)
+
+    if force_shift and len(sorted_ThAr_Ne_dates)>6:
+        dct_shfts['ref_name']  = ThAr_Ne_ref[sorted_ThAr_Ne_dates[refidx]]
+        dct_shfts['ref_grade'] = ref_grade
         with open(dirout+'shifts.pkl', 'wb') as fpkl:
             pickle.dump(dct_shfts, fpkl)
 
-    elif len(sorted_ThAr_Ne_dates)>6:
-        with open(calib_dir+'shifts.pkl', 'rb') as fpkl:
-            dct_shfts = pickle.load(fpkl, encoding='latin1')
-        # dct_shfts = pickle.load(open(dirout+'shifts.pkl','rb'), encoding='latin1')
-        I = np.argmin(dct_shfts['vals'])
-        goodname = dct_shfts['names'][I]
-        j = 0
-        while j < len(sorted_ThAr_Ne_dates):
-            if ThAr_Ne_ref[sorted_ThAr_Ne_dates[j]] == goodname:
-                refidx = j
-            j+=1
-    else:
-        refidx = 0
-
-    print(f'This: {ThAr_Ne_ref[sorted_ThAr_Ne_dates[refidx]]}')
+    print(f'This: {ThAr_Ne_ref[sorted_ThAr_Ne_dates[refidx]]} (grade {ref_grade})')
     #print gfds
     indice = sorted_ThAr_Ne_dates[refidx]
     # pkl_wsol = dirout + ThAr_Ne_ref[indice].split('/')[-1][:-4]+'wavsolpars.pkl'
@@ -808,6 +831,27 @@ else:
     print(f'\t\tLoading wavelength solution from {pkl_wsol}')
     with open(pkl_wsol, 'rb') as fpkl:
         wavsol_dict = pickle.load(fpkl, encoding='latin1')
+
+# Quality of the reference every science frame of this run is calibrated against
+# (the -ref_thar pickle is graded the same way, whatever its version).
+ref_quality  = ferosutils_fp.wavsol_quality(wavsol_dict)
+ref_pkl_path = os.path.abspath(pkl_wsol)
+calib_night  = os.path.basename(calib_dir.rstrip('/'))
+if calib_night.endswith('_red'):
+    calib_night = calib_night[:-4]
+print(f"\t\tReference wavelength solution: {ferosutils_fp.describe_quality(ref_quality)}")
+if ref_quality['grade'] != 'good':
+    if ref_thar != None:
+        _pipeline_warnings.append(
+            f"Reference ThAr {os.path.basename(ref_thar)} given with -ref_thar is not healthy: "
+            f"{ferosutils_fp.describe_quality(ref_quality)}; RVs flagged (GOOD QUALITY WAVSOL = F) - "
+            "pass the wavsolpars.pkl of a night whose calibration assesses healthy")
+    else:
+        _pipeline_warnings.append(
+            f"No healthy reference ThAr on {calib_night}: best has "
+            f"{ferosutils_fp.describe_quality(ref_quality)}; RVs flagged (GOOD QUALITY WAVSOL = F) - "
+            "reduce against a healthy night's reference with -ref_thar")
+    print(f"WARNING: {_pipeline_warnings[-1]}")
 
 print('\n\tExtraction of FP calibration frames:')
 

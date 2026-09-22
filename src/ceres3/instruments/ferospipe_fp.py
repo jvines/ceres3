@@ -2142,6 +2142,18 @@ if (not JustExtract):
 
 f_res.close()
 
+if is_calib:
+    # Machine-readable verdict on this calibration night, read back by
+    # ferosutils_fp.assess_calibration() (ExoAutomata decides from it whether
+    # science can be reduced against this night or needs another's -ref_thar).
+    calib_quality = ferosutils_fp.calib_quality_report(calib_dir, thar_pkls=thar_wavsol_pkls,
+                                                       reference_pkl=ref_pkl_path, trace_dict=trace_dict,
+                                                       warnings=_pipeline_warnings)
+    _cq_path = ferosutils_fp.write_calib_quality(dirout, calib_quality)
+    print(f"\n\tCalibration quality: {'healthy' if calib_quality['healthy'] else 'NOT healthy'} -> {_cq_path}")
+    for _r in calib_quality['reasons']:
+        print(f"\t\t- {_r}")
+
 _stage_times['total'] = time.perf_counter() - _t_pipeline_start
 print("\n\t[timing] Stage summary (seconds):")
 for _k, _v in _stage_times.items():

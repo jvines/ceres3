@@ -852,6 +852,7 @@ if ref_quality['grade'] != 'good':
             f"{ferosutils_fp.describe_quality(ref_quality)}; RVs flagged (GOOD QUALITY WAVSOL = F) - "
             "reduce against a healthy night's reference with -ref_thar")
     print(f"WARNING: {_pipeline_warnings[-1]}")
+drift_failed_frames = []    # science frames whose drift could not be measured to 5 m/s
 
 print('\n\tExtraction of FP calibration frames:')
 
@@ -1570,10 +1571,17 @@ for fsim in comp_list:
             fp_error_co = np.sqrt(np.var(tdrifts_co))/np.sqrt(float(len(tdrifts_co)))
             print(f'\t\t\tFP shift = {fp_shift_co} +- {fp_error_co} m/s')
             p_shift = 1e6*fp_shift_co/299792458.
-            good_quality = True
+            drift_ok = True
             if fp_error_co > 5:
-                good_quality = False
+                drift_ok = False
                 p_shift = 0.
+                drift_failed_frames.append(fsim.split('/')[-1])
+
+            # WAVSOL is good only if both the drift and the nightly reference are.
+            for _k, _v, _c in ferosutils_fp.wavsol_quality_cards(drift_ok, ref_quality, fp_error_co):
+                hdu = GLOBALutils.update_header(hdu, _k, _v, _c)
+            hdu = GLOBALutils.update_header(hdu,'HIERARCH WAVSOL ERROR', fp_error_co, '[m/s]')
+            hdu = GLOBALutils.update_header(hdu,'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
 
         elif comp_type == 'WAVE' or (ferosutils_fp.hasFP(h) and ref_fp_pkl is None):
             if ferosutils_fp.hasFP(h) and ref_fp_pkl is None:
@@ -1609,7 +1617,7 @@ for fsim in comp_list:
                 thar_order      = thar_order_orig - bkg
 
                 coeffs_pix2wav, coeffs_pix2sigma, pixel_centers, wavelengths,\
-                rms_ms, residuals, centroids, sigmas, intensities =\
+                rms_ms_order, residuals, centroids, sigmas, intensities =\
                      GLOBALutils.Initial_Wav_Calibration(order_dir+'order_'+\
                      order_s+thar_end, thar_order, order, wei, rmsmax=100, \
                      minlines=30,FixEnds=False,Dump_Argon=dumpargon,\
@@ -1623,24 +1631,32 @@ for fsim in comp_list:
                 All_residuals_co     = np.append( All_residuals_co, residuals )
                 order+=1
 
+            sci_fit_info = {}
             p1_co, G_pix_co, G_ord_co, G_wav_co, II_co, rms_ms_co, G_res_co = \
                         GLOBALutils.Fit_Global_Wav_Solution(All_Pixel_Centers_co, All_Wavelengths_co, All_Orders_co,\
                                                 np.ones(All_Intensities_co.shape), wsol_dict['p1_co'], Cheby=use_cheby,\
                                                 maxrms=MRMS, Inv=Inverse_m,minlines=1200,order0=OO0, \
-                                                ntotal=n_useful,npix=len(thar_order),nx=ncoef_x,nm=ncoef_m)
+                                                ntotal=n_useful,npix=len(thar_order),nx=ncoef_x,nm=ncoef_m,\
+                                                cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC,\
+                                                info=sci_fit_info)
 
+            sci_shift_info = {}
             p_shift, pix_centers, orders, wavelengths, I, rms_ms, residuals  = \
                 GLOBALutils.Global_Wav_Solution_vel_shift(All_Pixel_Centers_co,\
                 All_Wavelengths_co, All_Orders_co, np.ones(len(All_Wavelengths_co)), wsol_dict['p1_co'],\
                 minlines=1000, maxrms=MRMS,order0=OO0, ntotal=n_useful,\
-                Cheby=use_cheby, Inv=Inverse_m, npix=len(thar_order),nx=ncoef_x,nm=ncoef_m)
+                Cheby=use_cheby, Inv=Inverse_m, npix=len(thar_order),nx=ncoef_x,nm=ncoef_m,\
+                cull_floor=WAVSOL_CULL_FLOOR, max_cull_frac=WAVSOL_MAX_CULL_FRAC, info=sci_shift_info)
             precision    = rms_ms/np.sqrt(len(I))
             p_shift = p_shift[0]
-            good_quality = True
+            # The zeroing below is tied to the drift precision only; the quality of
+            # the reference is reported separately in the header cards.
+            drift_ok = True
             if (precision > 5):
-                good_quality = False
+                drift_ok = False
                 p_shift = 0.
-            if good_quality:
+                drift_failed_frames.append(fsim.split('/')[-1])
+            if drift_ok:
                 # Only measured shifts may anchor the nightly drift spline built at the
                 # end of this script. The 0. assigned above is a sentinel meaning "could
                 # not measure to better than 5 m/s", not a measurement of zero drift:
@@ -1668,7 +1684,9 @@ for fsim in comp_list:
             hdu = GLOBALutils.update_header(hdu,'HIERARCH THAR CO',fsim.split('/')[-1][:-5]+'_sp_co.fits')
 
 
-            hdu = GLOBALutils.update_header(hdu,'HIERARCH GOOD QUALITY WAVSOL', good_quality)
+            # WAVSOL is good only if both the drift and the nightly reference are.
+            for _k, _v, _c in ferosutils_fp.wavsol_quality_cards(drift_ok, ref_quality, precision):
+                hdu = GLOBALutils.update_header(hdu, _k, _v, _c)
             hdu = GLOBALutils.update_header(hdu,'HIERARCH WAVSOL ERROR', precision, '[m/s]')
             hdu = GLOBALutils.update_header(hdu,'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
         # Apply new wavelength solution including barycentric correction
@@ -1773,13 +1791,31 @@ for fsim in new_sky:
         p_shift = p_shifts[0]
     else:
         p_shift = 0.
+    p_shift = float(p_shift)
+    # An ObjSky frame has no simultaneous lamp: its drift is interpolated from the
+    # night's measured ObjCal drifts, and is only as good as having any of them.
+    drift_ok = len(p_mjds) >= 1
     date_obs_sky = h[0].header.get('DATE-OBS', '2000-01-01T00:00:00')
     time_part = date_obs_sky[11:].replace(':', '-')
     fout = f'proc/{obname}_{date_obs_sky[:4]}{date_obs_sky[5:7]}{date_obs_sky[8:10]}_UT{time_part}_sp.fits'
     hdu = pyfits.open(dirout + fout,mode='update')
     hdu[0].data[0,:,:] *= (1.0 + 1.0e-6*p_shift)
+    for _k, _v, _c in ferosutils_fp.wavsol_quality_cards(drift_ok, ref_quality):
+        hdu[0] = GLOBALutils.update_header(hdu[0], _k, _v, _c)
+    hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
     hdu.flush()
     hdu.close()
+
+if len(new_sky) > 0 and len(p_mjds) == 0:
+    _pipeline_warnings.append(
+        f"{len(new_sky)} ObjSky frame(s) on {os.path.basename(dirout.rstrip('/')).replace('_red', '')} got no drift correction: "
+        "no ObjCal frame of the night measured its drift to 5 m/s; their RVs are flagged "
+        "(GOOD QUALITY DRIFT = F) - check the simultaneous ThAr exposure levels")
+if len(drift_failed_frames) > 0:
+    _pipeline_warnings.append(
+        f"{len(drift_failed_frames)} of {len(new_list)} ObjCal frame(s) could not measure their drift "
+        f"to 5 m/s (e.g. {drift_failed_frames[0]}); their RVs are flagged (GOOD QUALITY DRIFT = F) "
+        "and they do not anchor the ObjSky drift interpolation")
 
 print("\n\tSarting with the post-processing:")
 #JustExtract = True

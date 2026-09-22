@@ -189,7 +189,20 @@ def getcoords(obname,mjd,filen='/data/echelle/feros/coords.txt'):
                 print('\t\tWarning! Problem with reference coordinates files.')
         return RA,DEC
 
-def get_them(sc,exap,ncoef,maxords=-1,startfrom=0,nsigmas=10.,mode=1,endat=-1,nc2=2):
+def get_them(sc,exap,ncoef,maxords=-1,startfrom=0,nsigmas=10.,mode=1,endat=-1,nc2=2,robust_noise=False):
+    """
+    Traces the echelle orders of the flat sc (orders along rows).
+
+    A local maximum of the central cut is taken as an order when it rises
+    nsigmas*ddev above the inter-order background, where ddev is the scatter
+    of the background samples. By default ddev is their standard deviation.
+    When a weak order is not a local maximum of its own (e.g. a faint FEROS
+    comparison fibre merged into the shoulder of its object fibre), its flux
+    lands among the background samples and inflates that std by orders of
+    magnitude, and the raised threshold then drops further weak orders.
+    robust_noise=True uses 1.4826*MAD of the same samples, which those few
+    contaminated samples cannot inflate.
+    """
     exap = int(exap)
     def fitfunc(p,x):
         ret = p[0] + p[1] * np.exp(-.5*((x-p[2])/p[3])**2)
@@ -292,7 +305,11 @@ def get_them(sc,exap,ncoef,maxords=-1,startfrom=0,nsigmas=10.,mode=1,endat=-1,nc
     #show()
     #print gfds
     dtemp = d[tbase] - interpolate.splev(tbase,tck)
-    ddev = np.sqrt(np.var(dtemp[5:-5]))
+    if robust_noise:
+        dcore = dtemp[5:-5]
+        ddev = 1.4826 * np.median(np.absolute(dcore - np.median(dcore)))
+    else:
+        ddev = np.sqrt(np.var(dtemp[5:-5]))
     dt = d-interpolate.splev(np.arange(len(d)),tck)
     #plot(dt)
     #axhline(3*ddev)

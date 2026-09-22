@@ -1201,6 +1201,13 @@ def assess_calibration(calib_dir):
         out = _assess_products(calib_dir)
         if json_problem:
             out['reasons'].append(json_problem)
+        elif int((out.get('trace') or {}).get('version', 1) or 1) >= 2:
+            # Traced by ceres3 >= 1.2, which writes calib_quality.json as the last
+            # step of every -is_calib run: without it that run did not finish, and
+            # its ThAr solutions / reference choice may be missing or partial.
+            out['healthy'] = False
+            out['reasons'].append(f'the calibration run did not finish (no {CALIB_QUALITY_FILE}); '
+                                  're-run the calibration')
         return out
     except Exception as e:  # never raise to the caller
         return {'version': CALIB_QUALITY_VERSION, 'source': 'legacy', 'calib_dir': str(calib_dir),

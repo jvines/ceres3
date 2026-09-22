@@ -403,6 +403,15 @@ class TestAssessCalibration:
         r = F.assess_calibration(tmp_path)
         assert r["reference_pkl"] == str(tmp_path / f"{stems[0]}.wavsolpars.pkl")
 
+    def test_unfinished_1_2_calibration_is_unhealthy(self, tmp_path, identity_trace):
+        # traced by ceres3 >= 1.2 but no calib_quality.json: the -is_calib run died
+        _trace_pkl(tmp_path, version=2)
+        _legacy_dir(tmp_path, [(1650, 104.0)] * 2, version=2)
+        r = F.assess_calibration(tmp_path)
+        assert r["trace_ok"] is True and r["reference_ok"] is True
+        assert r["healthy"] is False
+        assert any("did not finish" in s for s in r["reasons"])
+
     def test_corrupt_json_falls_back_to_pickles(self, tmp_path, identity_trace):
         _trace_pkl(tmp_path)
         _legacy_dir(tmp_path, [(1650, 104.0)] * 2)

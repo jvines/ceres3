@@ -1327,6 +1327,20 @@ use_moon  = np.array(use_moon)
 p_shifts = []
 p_mjds   = []
 
+if not is_calib:
+    # Extractions, scattered-light models, FP lines and stellar parameters cached in
+    # dirout are reused below; they are only valid for the calibration (and reference)
+    # they were made with. Remove the stale ones up front, so that an interrupted run
+    # can never leave an old product behind under the new provenance record.
+    _prov  = ferosutils_fp.extraction_provenance(calib_dir, ref_pkl_path)
+    _stale = ferosutils_fp.stale_science_products(dirout, _prov)
+    if _stale:
+        print(f"\tCached science products in {dirout} were made with another calibration or reference: "
+              f"removing {len(_stale)} file(s) so they are rebuilt")
+        for _f in _stale:
+            os.remove(_f)
+    ferosutils_fp.write_extraction_provenance(dirout, _prov)
+
 for fsim in comp_list:
 
     h        = pyfits.open(fsim)

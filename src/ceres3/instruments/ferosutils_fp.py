@@ -1209,3 +1209,81 @@ def assess_calibration(calib_dir):
                 'reasons': [f'calibration could not be assessed ({type(e).__name__}: {e}); re-run it'],
                 'thar': {'n_total': 0, 'n_good': 0, 'n_degraded': 0, 'n_bad': 0, 'frames': []},
                 'trace': {}}
+
+
+# ---------------------------------------------------------------------------
+# Provenance of the products a science run caches in its output directory.
+#
+# ferospipe_fp reuses the science extractions (*.spec.*.fits.S), scattered-light
+# models (BAC_*.fits), FP line positions and stellar parameters it finds in dirout.
+# They are only valid for the calibration they were made with: re-reducing a night
+# against another calibration (a fallback night, or a night re-traced by ceres3
+# >= 1.2) would otherwise silently keep extractions made with the old traces.
+# ---------------------------------------------------------------------------
+EXTRACTION_PROVENANCE_FILE = 'extraction_provenance.json'
+EXTRACTION_PROVENANCE_VERSION = 1
+# made from the frame with the calibration's traces, flat and bias
+_EXTRACTION_PRODUCTS = ('*.spec.ob.fits.S', '*.spec.co.fits.S', '*.spec.simple.ob.fits.S',
+                        '*.spec.simple.co.fits.S', 'BAC_*.fits', '*fplines.pkl')
+# additionally depend on the reference wavelength solution
+_WAVELENGTH_PRODUCTS = ('*_stellar_pars.txt',)
+_EXTRACTION_KEYS = ('calib_dir', 'trace_sha1', 'flat_sha1', 'masterbias_sha1')
+
+
+def _sha1_of(path):
+    import hashlib
+    if not path or not os.path.isfile(path):
+        return None
+    h = hashlib.sha1()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def extraction_provenance(calib_dir, reference_pkl=None):
+    """Identity of the calibration a science run extracts and calibrates with."""
+    calib_dir = os.path.realpath(str(calib_dir))
+    ref = os.path.realpath(reference_pkl) if reference_pkl else None
+    return {'version': EXTRACTION_PROVENANCE_VERSION, 'calib_dir': calib_dir,
+            'trace_sha1': _sha1_of(os.path.join(calib_dir, 'trace.pkl')),
+            'flat_sha1': _sha1_of(os.path.join(calib_dir, 'Flat.fits')),
+            'masterbias_sha1': _sha1_of(os.path.join(calib_dir, 'MasterBias.fits')),
+            'reference_pkl': ref, 'reference_sha1': _sha1_of(ref),
+            'ceres3_version': _ceres3_version()}
+
+
+def stale_science_products(dirout, provenance):
+    """
+    Cached science products in dirout that were not made with ``provenance``.
+
+    With no recorded provenance (a directory written before ceres3 1.2) every
+    cached product is presumed stale. A different trace, flat, bias or calibration
+    directory invalidates everything; a different reference solution only the
+    products that depend on the wavelength scale.
+    """
+    def found(patterns):
+        out = []
+        for p in patterns:
+            out += glob.glob(os.path.join(dirout, p))
+        return sorted(set(out))
+    old = None
+    try:
+        with open(os.path.join(dirout, EXTRACTION_PROVENANCE_FILE)) as f:
+            old = json.load(f)
+    except Exception:
+        old = None
+    if not isinstance(old, dict) or any(old.get(k) != provenance.get(k) for k in _EXTRACTION_KEYS):
+        return found(_EXTRACTION_PRODUCTS + _WAVELENGTH_PRODUCTS)
+    if any(old.get(k) != provenance.get(k) for k in ('reference_pkl', 'reference_sha1')):
+        return found(_WAVELENGTH_PRODUCTS)
+    return []
+
+
+def write_extraction_provenance(dirout, provenance):
+    path = os.path.join(dirout, EXTRACTION_PROVENANCE_FILE)
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(_jsonable(provenance), f, indent=1, sort_keys=True)
+    os.replace(tmp, path)
+    return path

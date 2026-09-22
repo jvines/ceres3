@@ -197,6 +197,33 @@ else:
     print("\tPre-processing files found, going straight to extraction")
     pre_process = 0
 
+def trace_orders(Flat, GA_flat, RO_flat, out_pkl):
+    """Trace the (transposed) master flat and label the traces as orders 0..35 x ob/co.
+
+    get_them uses a MAD noise floor, so a weak comparison-fibre trace cannot inflate it
+    and hide real traces; label_traces then identifies every detected trace against the
+    packaged template instead of assuming the first two are order -1 and the rest
+    alternate ob/co. Raises ferosutils_fp.FerosTraceError if an order the pipeline
+    calibrates cannot be traced."""
+    print("\tTracing echelle orders...")
+    c_raw, nord_raw = GLOBALutils.get_them(Flat, 6, trace_degree, maxords=-1, mode=2, startfrom=40,
+                                           endat=1900, nsigmas=nsigmas, robust_noise=True)
+    c_all, trace_info = ferosutils_fp.label_traces(c_raw, Flat.shape[1], o0=o0, n_useful=n_useful)
+    print(f"\t\t{nord_raw} traces found, {trace_info['matched']} of the 72 kept ones labelled, "
+          f"global offset {trace_info['offset_px']:+.2f} px from the template")
+    if trace_info['synthesized']:
+        print(f"\t\tNot detected, placed from the template (outside the calibrated orders): "
+              f"{', '.join(trace_info['synthesized'])}")
+    c_ob, c_co = c_all[0::2], c_all[1::2]
+    print(f"\t\t{len(c_ob)} object orders, {len(c_co)} comparison orders")
+    trace_dict = {'c_ob':c_ob, 'c_co':c_co, 'c_all':c_all, \
+                  'nord_ob':len(c_ob), 'nord_co':len(c_co), 'nord_all':len(c_all),\
+                  'GA_flat':GA_flat,'RO_flat':RO_flat,\
+                  'trace_version':2, 'trace_info':trace_info}
+    with open(out_pkl, 'wb') as f:
+        pickle.dump( trace_dict, f )
+    return trace_dict
+
 if (pre_process == 1):
     print("\t\tGenerating Master calibration frames...")
     # median combine Biases
@@ -218,47 +245,50 @@ if (pre_process == 1):
     print("\t\t-> Masterflat: done!")
 
     Flat = Flat.T
-    print("\tTracing echelle orders...")
-    # import pdb; pdb.set_trace()
-
-    c_all, nord_all = GLOBALutils.get_them(Flat, 6, trace_degree, maxords=-1,mode=2,startfrom=40,endat=1900, nsigmas=nsigmas)
-    #print nord_all, len(c_all)
-    #print gvfds
-    c_all = c_all[2:]
-    nord_all -= 2
-    I1 = np.arange(0,nord_all,2)
-    I2 = np.arange(1,nord_all+1,2)
-    # import pdb; pdb.set_trace()
-    c_ob, c_co = c_all[I1], c_all[I2]
-    nord_ob, nord_co = len(I1), len(I2)
-    print(f"\t\t{nord_ob} object orders found...")
-    print(f"\t\t{nord_co} comparison orders found...")
-
-    trace_dict = {'c_ob':c_ob, 'c_co':c_co, 'c_all':c_all, \
-          'nord_ob':nord_ob, 'nord_co':nord_co, 'nord_all':nord_all,\
-                  'GA_flat':GA_flat,'RO_flat':RO_flat}
-
-    with open(dirout+"trace.pkl", 'wb') as f:
-        pickle.dump( trace_dict, f )
+    trace_dict = trace_orders(Flat, GA_flat, RO_flat, dirout+"trace.pkl")
+    retraced = True
 
 else:
+    retraced = False
     with open(calib_dir+"trace.pkl", 'rb') as f:
         trace_dict = pickle.load( f, encoding='latin1' )
-    c_co = trace_dict['c_co']
-    c_ob = trace_dict['c_ob']
-    c_all = trace_dict['c_all']
-    nord_ob = trace_dict['nord_ob']
-    nord_co = trace_dict['nord_co']
-    nord_all = trace_dict['nord_all']
-    # recover GA*, RO*
-    GA_flat = trace_dict['GA_flat']
-    RO_flat = trace_dict['RO_flat']
     # recover flats & master bias
     with pyfits.open(calib_dir+'Flat.fits') as h:
         Flat = h[0].data
     Flat = Flat.T
     with pyfits.open(calib_dir+'MasterBias.fits') as h:
         MasterBias = h[0].data
+    # A trace.pkl written before ceres3 1.2 dropped the first two traces as order -1 and
+    # assumed the rest alternate ob/co from order 0, which misregisters every order on a
+    # night that missed a trace. Keep it only if it is the identity labelling.
+    if trace_dict.get('trace_version', 1) < 2 and \
+       not ferosutils_fp.legacy_trace_ok(trace_dict['c_all'], Flat.shape[1], o0=o0, n_useful=n_useful):
+        if not is_calib:
+            raise ferosutils_fp.FerosTraceError(f"calibration {calib_dir} was traced by an older ceres3 "
+                                                f"and is misregistered; re-run its calibration")
+        print(f"\tWARNING: {calib_dir}trace.pkl was traced by an older ceres3 and is misregistered: "
+              f"re-tracing, and recomputing every calibration product that depends on it")
+        trace_dict = trace_orders(Flat, trace_dict['GA_flat'], trace_dict['RO_flat'], calib_dir+"trace.pkl")
+        retraced = True
+
+if retraced and is_calib:
+    # Flat/ThAr/FP extractions, wavelength solutions and the reference-ThAr choice left
+    # in this calibration directory by an earlier trace are stale: recompute them all.
+    force_flat_extract = True
+    force_thar_extract = True
+    force_thar_wavcal  = True
+    if os.access(calib_dir+'shifts.pkl', os.F_OK):
+        os.remove(calib_dir+'shifts.pkl')
+
+c_co = trace_dict['c_co']
+c_ob = trace_dict['c_ob']
+c_all = trace_dict['c_all']
+nord_ob = trace_dict['nord_ob']
+nord_co = trace_dict['nord_co']
+nord_all = trace_dict['nord_all']
+# recover GA*, RO*
+GA_flat = trace_dict['GA_flat']
+RO_flat = trace_dict['RO_flat']
 
 dark_times = np.around(dark_times).astype('int')
 uni_times = np.unique(dark_times)
@@ -293,7 +323,6 @@ S_flat_co_fits        = calib_dir +'S_flat_co.fits'
 S_flat_co             = np.zeros((nord_co, 3, Flat.shape[1]) )
 
 #bacfile = dirout + 'BAC_Flat.fits'
-force_flat_extract = False
 if ( os.access(P_ob_fits,os.F_OK) == False )             or ( os.access(P_co_fits,os.F_OK) == False )             or \
    ( os.access(S_flat_ob_fits,os.F_OK) == False )        or ( os.access(S_flat_co_fits,os.F_OK) == False )        or \
    (force_flat_extract):
@@ -378,11 +407,11 @@ else:
 S_flat_ob_n, norms_ob = GLOBALutils.FlatNormalize_single( S_flat_ob, mid=int(.5*S_flat_ob.shape[2]))
 S_flat_co_n, norms_co = GLOBALutils.FlatNormalize_single( S_flat_co, mid=int(.5*S_flat_co.shape[2]))
 
-if nord_ob < o0 + n_useful:
-    _old_n = n_useful
-    n_useful = nord_ob - o0
-    _pipeline_warnings.append(f"Order count clamped: {nord_ob} orders traced, using {n_useful} of {_old_n} (o0={o0}). Blue coverage reduced.")
-    print(f"WARNING: Order count clamped from {_old_n} to {n_useful} ({nord_ob} orders traced, o0={o0})")
+if nord_ob < o0 + n_useful or nord_co < o0 + n_useful:
+    # label_traces always returns 36 orders per fibre: fewer means an inconsistent trace.pkl.
+    raise ferosutils_fp.FerosTraceError(f"{calib_dir}trace.pkl has {nord_ob} object / {nord_co} comparison "
+                                        f"orders but orders {o0}..{o0 + n_useful - 1} are wavelength-calibrated; "
+                                        f"re-run this night's calibration")
 
 print('\n\tExtraction of ThAr calibration frames:')
 # Extract all ThAr+Ne files
@@ -463,11 +492,12 @@ for i in range(len(sorted_ThAr_Ne_dates)):
         All_Intensities   = np.array([])
         All_residuals   = np.array([])
 
-        if thar_S_ob.shape[0] < o0 + n_useful:
-            _old_n = n_useful
-            n_useful = thar_S_ob.shape[0] - o0
-            _pipeline_warnings.append(f"ThAr order count clamped: {thar_S_ob.shape[0]} orders in ThAr, using {n_useful} of {_old_n}")
-            print(f"WARNING: ThAr order count clamped from {_old_n} to {n_useful} ({thar_S_ob.shape[0]} orders, o0={o0})")
+        if thar_S_ob.shape[0] < o0 + n_useful or thar_S_co.shape[0] < o0 + n_useful:
+            # a ThAr extraction cached from an older (misregistered) trace
+            raise ferosutils_fp.FerosTraceError(f"{thar_fits_ob} holds {thar_S_ob.shape[0]} object / "
+                                                f"{thar_S_co.shape[0]} comparison orders but orders "
+                                                f"{o0}..{o0 + n_useful - 1} are wavelength-calibrated: it was "
+                                                f"extracted with an older trace; re-run this night's calibration")
 
         wavss   =[]
         orss    = []

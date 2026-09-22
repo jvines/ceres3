@@ -189,7 +189,20 @@ def getcoords(obname,mjd,filen='/data/echelle/feros/coords.txt'):
                 print('\t\tWarning! Problem with reference coordinates files.')
         return RA,DEC
 
-def get_them(sc,exap,ncoef,maxords=-1,startfrom=0,nsigmas=10.,mode=1,endat=-1,nc2=2):
+def get_them(sc,exap,ncoef,maxords=-1,startfrom=0,nsigmas=10.,mode=1,endat=-1,nc2=2,robust_noise=False):
+    """
+    Traces the echelle orders of the flat sc (orders along rows).
+
+    A local maximum of the central cut is taken as an order when it rises
+    nsigmas*ddev above the inter-order background, where ddev is the scatter
+    of the background samples. By default ddev is their standard deviation.
+    When a weak order is not a local maximum of its own (e.g. a faint FEROS
+    comparison fibre merged into the shoulder of its object fibre), its flux
+    lands among the background samples and inflates that std by orders of
+    magnitude, and the raised threshold then drops further weak orders.
+    robust_noise=True uses 1.4826*MAD of the same samples, which those few
+    contaminated samples cannot inflate.
+    """
     exap = int(exap)
     def fitfunc(p,x):
         ret = p[0] + p[1] * np.exp(-.5*((x-p[2])/p[3])**2)
@@ -292,7 +305,11 @@ def get_them(sc,exap,ncoef,maxords=-1,startfrom=0,nsigmas=10.,mode=1,endat=-1,nc
     #show()
     #print gfds
     dtemp = d[tbase] - interpolate.splev(tbase,tck)
-    ddev = np.sqrt(np.var(dtemp[5:-5]))
+    if robust_noise:
+        dcore = dtemp[5:-5]
+        ddev = 1.4826 * np.median(np.absolute(dcore - np.median(dcore)))
+    else:
+        ddev = np.sqrt(np.var(dtemp[5:-5]))
     dt = d-interpolate.splev(np.arange(len(d)),tck)
     #plot(dt)
     #axhline(3*ddev)
@@ -2236,7 +2253,45 @@ def LineFit_SingleSigma(X, Y, B, mu, sigma, weight,pixelization=False):
 
     return p_output, success
 
-def Fit_Global_Wav_Solution(pix_centers, wavelengths, orders, Wgt, p0, minlines=1000, maxrms=150, order0=89, ntotal= 70, npix=2048, Cheby=False, Inv = False,nx=5,nm=6):
+def _culling_floor(n_initial, minlines, cull_floor, max_cull_frac):
+    """
+    Number of lines the global-solution culling may never go below.
+
+    cull_floor=None (legacy): the floor is minlines.
+    cull_floor=int: the floor is cull_floor, raised to
+    ceil(n_initial*(1-max_cull_frac)) when max_cull_frac is given, so a single
+    fit never discards more than that fraction of its lines.
+    """
+    if cull_floor is None:
+        if max_cull_frac is not None:
+            raise ValueError("max_cull_frac requires cull_floor")
+        return int(minlines)
+    floor = int(cull_floor)
+    if max_cull_frac is not None:
+        if not 0. <= max_cull_frac <= 1.:
+            raise ValueError("max_cull_frac must lie in [0, 1], got %r" % (max_cull_frac,))
+        # the 1e-9 keeps float noise in 1-max_cull_frac from adding a line
+        floor = max(floor, int(np.ceil(n_initial * (1. - max_cull_frac) - 1e-9)))
+    return floor
+
+def _fill_culling_info(info, n_initial, n_final, rms_initial, rms_final, floor,
+                       floor_hit, iterations, minlines):
+    """Report what the global-solution culling did into the caller's dict."""
+    if info is None:
+        return
+    info.update({
+        'n_initial': int(n_initial),
+        'n_final': int(n_final),
+        'rms_initial': float(rms_initial),
+        'rms_final': float(rms_final),
+        'floor': int(floor),
+        'floor_hit': bool(floor_hit),
+        'n_removed': int(n_initial - n_final),
+        'iterations': int(iterations),
+        'below_minlines': bool(n_final < minlines),
+    })
+
+def Fit_Global_Wav_Solution(pix_centers, wavelengths, orders, Wgt, p0, minlines=1000, maxrms=150, order0=89, ntotal= 70, npix=2048, Cheby=False, Inv = False,nx=5,nm=6, cull_floor=None, max_cull_frac=None, info=None):
     """
     Given x_i, lamda_i and m_i fit for a solution of the form
 
@@ -2245,6 +2300,23 @@ def Fit_Global_Wav_Solution(pix_centers, wavelengths, orders, Wgt, p0, minlines=
     where m_i = raw_order_numer + 89
     [89 comes from running Find_m on an image solved with order-by-order wav cal]
 
+    Culling: every line beyond 4 sigma is rejected per iteration (3 sigma once
+    none is left but the rms is still >= maxrms) and the solution is refit, so
+    the returned p1, I, rms_ms and residuals always describe the same lines.
+    Culling never takes the number of lines below a floor; when a batch would
+    cross it only the worst lines down to the floor are removed, the solution
+    is refit once more and culling stops.
+
+    cull_floor=None (legacy): the floor is minlines, and a line list that
+        starts with fewer than minlines lines is not culled at all.
+    cull_floor=int: the floor is cull_floor, or ceil(N*(1-max_cull_frac)) if
+        that is larger, and the list is culled whenever it has outliers,
+        whatever minlines is. Use it when misidentified lines can make up a
+        list that is short of minlines: legacy mode keeps every one of them.
+    info: optional dict, filled with n_initial, n_final, rms_initial,
+        rms_final (m/s), floor, floor_hit (culling was stopped by the floor
+        while the stop criterion was still unmet), n_removed, iterations and
+        below_minlines (n_final < minlines).
     """
     def fitfunc(p, x, m):
         ret = (1.0/m) * Joint_Polynomial(p,x,m)
@@ -2278,11 +2350,19 @@ def Fit_Global_Wav_Solution(pix_centers, wavelengths, orders, Wgt, p0, minlines=
 
     N_l = len( pix_centers )
     I = list(range( N_l ))
+    N_initial, rms_initial = N_l, rms_ms
+    floor = _culling_floor(N_l, minlines, cull_floor, max_cull_frac)
+    floor_hit = False
+    iterations = 0
 
     cond = 1
     L = np.where( np.absolute(residuals_ms) > 4.0*rms_ms )
-    if ( (len(L[0]) == 0) and (rms_ms < maxrms) ) or (N_l < minlines):
+    if ( (len(L[0]) == 0) and (rms_ms < maxrms) ):
         cond=0
+    elif (cull_floor is None) and (N_l < minlines):
+        # legacy: a list that starts short of minlines is never culled
+        cond=0
+        floor_hit = True
 
     print("\t\t\tStart Global culling with ", N_l, " number of lines")
     bad_wavs, bad_ords = [],[]
@@ -2302,6 +2382,18 @@ def Fit_Global_Wav_Solution(pix_centers, wavelengths, orders, Wgt, p0, minlines=
                     cond = 0
 
         if cond and len(outlier_indices) > 0:
+            # Never cull below the floor: if the whole batch would cross it,
+            # drop only its worst lines down to the floor, refit, and stop.
+            n_room = N_l - floor
+            if n_room <= 0:
+                floor_hit = True
+                break
+            if len(outlier_indices) > n_room:
+                worst = np.argsort(-np.absolute(residuals_ms[outlier_indices]), kind='stable')
+                outlier_indices = outlier_indices[worst[:n_room]]
+                floor_hit = True
+                cond = 0
+
             for idx in outlier_indices:
                 bad_wavs.append(wavelengths[I[idx]])
                 bad_ords.append(orders[I[idx]])
@@ -2309,10 +2401,8 @@ def Fit_Global_Wav_Solution(pix_centers, wavelengths, orders, Wgt, p0, minlines=
                 I.pop(idx)
             N_l = len(I)
 
-            if N_l < minlines:
-                cond = 0
-                continue
-
+            # Refit after every removal, the last one included, so that p1
+            # describes exactly the lines returned in I.
             if (Cheby):
                 chebs = Calculate_chebs(pix_centers[I], orders[I]+order0, Inverse=Inv,nx=nx,nm=nm,ntotal=ntotal,npix=npix,order0=order0)
                 p1, success = scipy.optimize.leastsq(errfunc_cheb, p0, args=(chebs, wavelengths[I], orders[I] + order0, Wgt[I]))
@@ -2320,12 +2410,13 @@ def Fit_Global_Wav_Solution(pix_centers, wavelengths, orders, Wgt, p0, minlines=
             else:
                 p1, success = scipy.optimize.leastsq(errfunc, p0, args=(pix_centers[I], orders[I] + order0, wavelengths[I]))
                 residuals = errfunc(p1, pix_centers[I], orders[I] + order0, wavelengths[I])
+            iterations += 1
 
             residuals_ms = 299792458.0 * residuals / wavelengths[I]
             rms_ms = np.sqrt( np.var( residuals_ms ) )
 
             L = np.where( np.absolute(residuals_ms) > 4.*rms_ms )
-            if ( (len(L[0]) == 0) and (rms_ms < maxrms) ) or (N_l < minlines):
+            if ( (len(L[0]) == 0) and (rms_ms < maxrms) ):
                 cond = 0
 
     #for oo in np.unique(orders[I]):
@@ -2342,13 +2433,17 @@ def Fit_Global_Wav_Solution(pix_centers, wavelengths, orders, Wgt, p0, minlines=
         for j in ist:
                 print(tmpords[j],tmpwvs[j])
     """
+    _fill_culling_info(info, N_initial, N_l, rms_initial, rms_ms, floor,
+                       floor_hit, iterations, minlines)
+    if floor_hit:
+        print("\t\t\tGlobal culling stopped at the floor of ", floor, " lines")
     print("\t\t\tFinal RMS is ", rms_ms)
     print("\t\t\tNumber of lines is ", N_l)
     print("\t\t\t--> Achievable RV precision is ", rms_ms/np.sqrt(N_l))
 
     return p1, pix_centers[I], orders[I], wavelengths[I], I, rms_ms, residuals
 
-def Global_Wav_Solution_vel_shift(pix_centers, wavelengths, orders, Wgt, p_ref, minlines=1000, maxrms=150, order0=89, ntotal= 70, npix=2048, Cheby=False, Inv = False,nx=5,nm=6):
+def Global_Wav_Solution_vel_shift(pix_centers, wavelengths, orders, Wgt, p_ref, minlines=1000, maxrms=150, order0=89, ntotal= 70, npix=2048, Cheby=False, Inv = False,nx=5,nm=6, cull_floor=None, max_cull_frac=None, info=None):
     """
     Given x_i, lamda_i and m_i fit for a solution of the form
 
@@ -2357,6 +2452,11 @@ def Global_Wav_Solution_vel_shift(pix_centers, wavelengths, orders, Wgt, p_ref, 
     where m_i = raw_order_numer + 89
     [89 comes from running Find_m on an image solved with order-by-order wav cal]
 
+    Only a velocity shift with respect to the solution p_ref is fit. Culling
+    removes the worst line and refits, one line at a time, until no line is
+    beyond 4 sigma and the rms is below maxrms, and never takes the number of
+    lines below the floor. cull_floor, max_cull_frac and info work exactly as
+    in Fit_Global_Wav_Solution.
     """
     def fitfunc(p, p_ref,x, m):
         ret = ((1+1e-6*p)/m) * Joint_Polynomial(p_ref,x,m)
@@ -2385,11 +2485,19 @@ def Global_Wav_Solution_vel_shift(pix_centers, wavelengths, orders, Wgt, p_ref, 
 
     N_l = len( pix_centers )
     I = list(range( N_l ))
+    N_initial, rms_initial = N_l, rms_ms
+    floor = _culling_floor(N_l, minlines, cull_floor, max_cull_frac)
+    floor_hit = False
+    iterations = 0
 
     cond = 1
     L = np.where( np.absolute(residuals_ms) > 4.0*rms_ms )
-    if ( (len(L[0]) == 0) and (rms_ms < maxrms) ) or (N_l < minlines):
+    if ( (len(L[0]) == 0) and (rms_ms < maxrms) ):
         cond=0
+    elif (cull_floor is None) and (N_l < minlines):
+        # legacy: a list that starts short of minlines is never culled
+        cond=0
+        floor_hit = True
 
     #for oo in np.unique(orders[I]):
     #   III = np.where(orders[I]==oo)[0]
@@ -2398,6 +2506,10 @@ def Global_Wav_Solution_vel_shift(pix_centers, wavelengths, orders, Wgt, p_ref, 
 
     print("\t\t\tStart Global culling with ", N_l, " number of lines")
     while (cond):
+        # stop at the floor instead of removing a line that would cross it
+        if N_l <= floor:
+            floor_hit = True
+            break
         index_worst = np.argmax( np.absolute(residuals) )
         I.pop( index_worst )
         N_l -= 1
@@ -2408,16 +2520,21 @@ def Global_Wav_Solution_vel_shift(pix_centers, wavelengths, orders, Wgt, p_ref, 
         else:
             p1, success = scipy.optimize.leastsq(errfunc, p0, args=(p_ref, pix_centers[I], orders[I] + order0, wavelengths[I]))
             residuals    = errfunc(p1, p_ref,  pix_centers[I], orders[I] + order0, wavelengths[I])
+        iterations += 1
 
         residuals_ms = 299792458.0 * residuals / wavelengths[I]
         rms_ms       = np.sqrt( np.var( residuals_ms ) )
         #print 'p1',(1e-6*p1)*299792458.0
         L = np.where( np.absolute(residuals_ms) > 4.*rms_ms )
-        if ( (len(L[0]) == 0) and (rms_ms < maxrms) ) or (N_l < minlines):
+        if ( (len(L[0]) == 0) and (rms_ms < maxrms) ):
             cond=0
         #print "Eliminated line ", index_worst, " at order ", orders[index_worst]
         #print "RMS is ", rms_ms, " after elimination", len(L[0]), rms_ms, maxrms, N_l
 
+    _fill_culling_info(info, N_initial, N_l, rms_initial, rms_ms, floor,
+                       floor_hit, iterations, minlines)
+    if floor_hit:
+        print("\t\t\tGlobal culling stopped at the floor of ", floor, " lines")
     print("\t\t\tFinal RMS is ", rms_ms)
     print("\t\t\tNumber of lines is ", N_l)
     print("\t\t\t--> Achievable RV precision is ", rms_ms/np.sqrt(N_l))

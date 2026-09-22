@@ -486,11 +486,14 @@ for i in range(len(sorted_ThAr_Ne_dates)):
         All_Intensities   = np.array([])
         All_residuals   = np.array([])
 
-        if thar_S_ob.shape[0] < o0 + n_useful:
-            _old_n = n_useful
-            n_useful = thar_S_ob.shape[0] - o0
-            _pipeline_warnings.append(f"ThAr order count clamped: {thar_S_ob.shape[0]} orders in ThAr, using {n_useful} of {_old_n}")
-            print(f"WARNING: ThAr order count clamped from {_old_n} to {n_useful} ({thar_S_ob.shape[0]} orders, o0={o0})")
+        if min(thar_S_ob.shape[0], thar_S_co.shape[0]) < o0 + n_useful:
+            # Silently calibrating fewer orders shifts the line lists onto the
+            # wrong orders; an extraction that disagrees with the trace is fatal.
+            raise ferosutils_fp.FerosTraceError(
+                f"FEROS trace labelling failed: ThAr {ThAr_Ne_ref[index].split('/')[-1]} was extracted "
+                f"with {thar_S_ob.shape[0]}/{thar_S_co.shape[0]} object/comparison orders but orders "
+                f"{o0}..{o0+n_useful-1} are needed; delete its spec.*.fits.S in {calib_dir} and re-run "
+                "the calibration (-is_calib)")
 
         wavss   =[]
         orss    = []
@@ -1601,7 +1604,10 @@ for fsim in comp_list:
             All_residuals_co     = np.array([])
 
             if lines_thar_co.shape[0] < o0 + n_useful:
-                n_useful = lines_thar_co.shape[0] - o0
+                raise ferosutils_fp.FerosTraceError(
+                    f"FEROS trace labelling failed: {fsim.split('/')[-1]} was extracted with "
+                    f"{lines_thar_co.shape[0]} comparison orders but orders {o0}..{o0+n_useful-1} "
+                    f"are needed; delete its spec.*.fits.S in {dirout} and reduce it again")
             order = o0
             c_p2w_c = []
             shifts = []

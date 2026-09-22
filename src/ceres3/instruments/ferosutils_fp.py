@@ -406,6 +406,268 @@ def get_dark(time,dnames,dtimes):
 
 
 # ---------------------------------------------------------------------------
+# Order-trace labelling
+#
+# ferospipe_fp used to drop the first two traces returned by GLOBALutils.get_them
+# (c_all[2:], meant to be the order -1 pair) and assume the rest alternate ob, co
+# from order 0 upwards. When the master flat misses a trace -- typically the weak
+# red-end comparison traces co-1/co0 -- every later order is then calibrated with
+# its neighbour's line list, and an odd trace count crashes the ob/co split.
+# label_traces identifies every detected trace instead, by matching the set to a
+# template of the 74 physical traces (orders -1..35 x ob/co) with one global
+# cross-dispersion offset.
+# ---------------------------------------------------------------------------
+
+TRACE_TEMPLATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   'data', 'feros_trace_template.txt')
+TRACE_N_ORDERS      = 36              # orders 0..35 are kept, one ob and one co trace each
+TRACE_O0            = 8               # ferospipe_fp o0: first wavelength-calibrated order
+TRACE_N_USEFUL      = 25              # ferospipe_fp n_useful: number of calibrated orders
+TRACE_OFFSET_RANGE  = (-10.0, 10.0)   # plausible global offset w.r.t. the template [px]; 2017-2026 span -6.5..+5.25
+TRACE_SEARCH_MARGIN = 3.0             # the offset search extends this far beyond the plausible range [px]
+TRACE_SEARCH_STEP   = 0.05            # [px]
+TRACE_MATCH_CAP     = 2.0             # truncation of the robust matching cost [px]
+TRACE_USED_TOL      = 2.0             # max residual of a trace in the used order range [px]; healthy nights <= 1.43
+TRACE_OUTER_TOL     = 6.0             # max residual outside it [px]; weak edge traces are fitted up to ~4.8 px off
+TRACE_AMBIG_MARGIN  = 0.25            # runner-up offset must leave >= 25% more of the set unexplained
+TRACE_EVAL_FRACS    = (0.125, 0.5, 0.875)  # columns (fraction of npix) where residuals are measured
+
+_trace_template_cache = {}
+
+
+class FerosTraceError(RuntimeError):
+    """The FEROS order traces cannot be labelled (or a calibration's traces are
+    misregistered): reducing on would calibrate orders with the wrong line lists."""
+    PREFIX = 'FEROS trace labelling failed'
+
+    def __init__(self, msg):
+        msg = str(msg)
+        if not msg.startswith(self.PREFIX):
+            msg = f'{self.PREFIX}: {msg}'
+        super().__init__(msg)
+
+
+def _trace_label(order, fibre):
+    return f'{fibre}{int(order)}'
+
+
+def load_trace_template(path=None):
+    """Load the packaged FEROS trace template (see the data file header for how it
+    was built). Returns a dict with 'order' (int array, -1..35), 'fibre' ('ob'/'co'),
+    'labels', 'coeffs' (np.polyval order, highest power first), 'npix', 'meta', 'path'.
+    Rows are sorted by increasing cross-dispersion position."""
+    path = TRACE_TEMPLATE_FILE if path is None else path
+    if path in _trace_template_cache:
+        return _trace_template_cache[path]
+    meta, orders, fibres, coeffs = {}, [], [], []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('#'):
+                key, sep, val = line[1:].partition(':')
+                if sep and key.strip() and ' ' not in key.strip():
+                    meta[key.strip()] = val.strip()
+                continue
+            tok = line.split()
+            orders.append(int(tok[0]))
+            fibres.append(tok[1])
+            coeffs.append([float(v) for v in tok[5:]])
+    tmpl = {
+        'order': np.array(orders, dtype=int),
+        'fibre': np.array(fibres),
+        'labels': [_trace_label(o, fb) for o, fb in zip(orders, fibres)],
+        'coeffs': np.array(coeffs, dtype=float),
+        'npix': int(meta['npix']),
+        'meta': meta,
+        'path': path,
+    }
+    _trace_template_cache[path] = tmpl
+    return tmpl
+
+
+def _match_traces(c_raw, npix, o0, n_useful, template):
+    """Core of label_traces/legacy_trace_ok: global offset + nearest-template
+    assignment. Returns (offset, slot, res, diag) where slot[i] is the template row
+    of raw trace i (-1 if rejected) and res[i] its max |residual| over the evaluation
+    columns. Raises FerosTraceError for an implausible or ambiguous offset, or when a
+    trace inside the used order range cannot be explained."""
+    tmpl = load_trace_template(template)
+    if int(npix) != tmpl['npix']:
+        raise FerosTraceError(f"flat has {npix} dispersion columns, the trace template "
+                              f"{os.path.basename(tmpl['path'])} was built for {tmpl['npix']}")
+    c_raw = np.atleast_2d(np.asarray(c_raw, dtype=float))
+    n_raw = c_raw.shape[0]
+    cols = [int(fr * npix) for fr in TRACE_EVAL_FRACS]
+    ic = cols.index(int(0.5 * npix))
+    yr = np.array([[np.polyval(c, x) for x in cols] for c in c_raw]).reshape(n_raw, len(cols))
+    yt = np.array([[np.polyval(c, x) for x in cols] for c in tmpl['coeffs']])
+    good = np.all(np.isfinite(yr), axis=1)
+    if good.sum() == 0:
+        raise FerosTraceError(f'no usable traces among the {n_raw} detected')
+
+    # Robust cost of one global offset: truncated quadratic distance of every raw
+    # trace to its nearest template trace at the centre column.
+    lo, hi = TRACE_OFFSET_RANGE
+    grid = np.arange(lo - TRACE_SEARCH_MARGIN, hi + TRACE_SEARCH_MARGIN + 1e-9, TRACE_SEARCH_STEP)
+    d = np.abs(yr[good, ic][None, :, None] - (yt[None, None, :, ic] + grid[:, None, None])).min(axis=2)
+    cost = (np.minimum(d, TRACE_MATCH_CAP)**2).sum(axis=1) / (good.sum() * TRACE_MATCH_CAP**2)
+    ib = int(np.argmin(cost))
+    far = np.abs(grid - grid[ib]) > 2 * TRACE_MATCH_CAP
+    i2 = int(np.argmin(np.where(far, cost, np.inf))) if far.any() else ib
+    diag = {'cost_best': float(cost[ib]), 'runner_up_offset_px': float(grid[i2]),
+            'cost_runner_up': float(cost[i2])}
+    if not (lo <= grid[ib] <= hi):
+        raise FerosTraceError(f'best global offset {grid[ib]:+.2f} px is outside the plausible '
+                              f'range {lo:+.1f}..{hi:+.1f} px of the trace template')
+    if cost[i2] - cost[ib] < TRACE_AMBIG_MARGIN:
+        raise FerosTraceError(f'ambiguous global offset: {grid[ib]:+.2f} px (cost {cost[ib]:.2f}) vs '
+                              f'{grid[i2]:+.2f} px (cost {cost[i2]:.2f}) from {n_raw} detected traces')
+
+    # Refine: nearest-template assignment, offset = median residual of the traces
+    # within the cost cap, iterate.
+    def assign(off):
+        slot = np.full(n_raw, -1)
+        r = np.full((n_raw, len(cols)), np.inf)
+        slot[good] = np.argmin(np.abs(yr[good, ic][:, None] - (yt[None, :, ic] + off)), axis=1)
+        r[good] = yr[good] - yt[slot[good]] - off
+        return slot, r
+
+    off = float(grid[ib])
+    for _ in range(5):
+        slot, r = assign(off)
+        close = np.abs(r[:, ic]) <= TRACE_MATCH_CAP
+        new = off + float(np.median(r[close, ic])) if close.any() else off
+        converged = abs(new - off) < 1e-3
+        off = new
+        if converged:
+            break
+    slot, r = assign(off)
+    res = np.max(np.abs(r), axis=1)
+    if not (lo <= off <= hi):
+        raise FerosTraceError(f'global offset {off:+.2f} px is outside the plausible range '
+                              f'{lo:+.1f}..{hi:+.1f} px of the trace template')
+
+    orders = tmpl['order']
+    in_used = (orders >= o0) & (orders < o0 + n_useful)
+
+    def y0(i):
+        return f'y={yr[i, ic]:.1f}'
+
+    for i in range(n_raw):
+        if slot[i] < 0:
+            continue
+        tol = TRACE_USED_TOL if in_used[slot[i]] else TRACE_OUTER_TOL
+        if res[i] > tol:
+            if in_used[slot[i]]:
+                raise FerosTraceError(f'trace at {y0(i)} does not match the template: nearest is '
+                                      f"{tmpl['labels'][slot[i]]} (used order range) with a "
+                                      f'{res[i]:.1f} px residual > {tol:.1f} px')
+            slot[i] = -1
+    for k in np.unique(slot[slot >= 0]):
+        dup = np.where(slot == k)[0]
+        if len(dup) > 1:
+            if in_used[k]:
+                raise FerosTraceError(f"{len(dup)} detected traces ({', '.join(y0(i) for i in dup)}) "
+                                      f"compete for {tmpl['labels'][k]} in the used order range")
+            slot[dup[dup != dup[np.argmin(res[dup])]]] = -1
+    diag['y_centre'] = yr[:, ic]
+    return off, slot, res, diag
+
+
+def label_traces(c_raw, npix, o0=TRACE_O0, n_useful=TRACE_N_USEFUL, template=None):
+    """Label the traces found by GLOBALutils.get_them on a FEROS master flat.
+
+    c_raw : (n_raw, ncoef) trace polynomials (np.polyval order, x = dispersion column,
+            y = row of the transposed flat), any count and any subset of the 74 traces.
+    npix  : number of dispersion columns of the transposed flat (Flat.T.shape[1]).
+
+    Returns (c_all, info). c_all has exactly 72 rows, orders 0..35 interleaved ob, co
+    (the layout ferospipe_fp always assumed after c_all[2:]); detected traces are
+    identified by matching the whole set to the template with one global offset.
+    Traces missing OUTSIDE the used orders [o0, o0+n_useful) are synthesised from the
+    template shifted by that offset and listed in info['synthesized']; a trace missing
+    inside it, an unexplained trace inside it, or an implausible/ambiguous offset raise
+    FerosTraceError.
+
+    info: n_raw, offset_px, matched (kept rows taken from detected traces), synthesized
+    (labels), max_residual_px (over kept detected traces), max_residual_used_px,
+    dropped (labels of detected traces outside orders 0..35), rejected_y_px (centre
+    positions of detected traces matching no template trace), cost_best,
+    runner_up_offset_px, cost_runner_up, template."""
+    tmpl = load_trace_template(template)
+    c_raw = np.atleast_2d(np.asarray(c_raw, dtype=float))
+    off, slot, res, diag = _match_traces(c_raw, npix, o0, n_useful, template)
+    ncoef = c_raw.shape[1]
+    raw_of = {int(k): i for i, k in enumerate(slot) if k >= 0}
+    c_all, synthesized, missing_used = [], [], []
+    for order in range(TRACE_N_ORDERS):
+        for fib in ('ob', 'co'):
+            k = int(np.where((tmpl['order'] == order) & (tmpl['fibre'] == fib))[0][0])
+            if k in raw_of:
+                c_all.append(c_raw[raw_of[k]])
+                continue
+            if o0 <= order < o0 + n_useful:
+                missing_used.append(_trace_label(order, fib))
+                continue
+            ct = tmpl['coeffs'][k].copy()
+            ct[-1] += off
+            if len(ct) < ncoef:
+                ct = np.concatenate([np.zeros(ncoef - len(ct)), ct])
+            elif len(ct) > ncoef:
+                x = np.arange(npix, dtype=float)
+                ct = np.polyfit(x, np.polyval(ct, x), ncoef - 1)
+            c_all.append(ct)
+            synthesized.append(_trace_label(order, fib))
+    if missing_used:
+        raise FerosTraceError(f"{len(missing_used)} trace(s) in the used order range "
+                              f"{o0}..{o0 + n_useful - 1} not found on the master flat: "
+                              f"{', '.join(missing_used)} ({c_raw.shape[0]} traces detected, "
+                              f"global offset {off:+.2f} px)")
+    c_all = np.array(c_all)
+    yc = np.array([np.polyval(c, int(0.5 * npix)) for c in c_all])
+    if np.any(np.diff(yc) <= 0):
+        raise FerosTraceError('labelled traces are not ordered in cross-dispersion')
+    kept = [i for i, k in enumerate(slot) if k >= 0 and 0 <= tmpl['order'][k] < TRACE_N_ORDERS]
+    used = [i for i in kept if o0 <= tmpl['order'][slot[i]] < o0 + n_useful]
+    info = {
+        'n_raw': int(c_raw.shape[0]),
+        'offset_px': float(off),
+        'matched': len(kept),
+        'synthesized': synthesized,
+        'max_residual_px': float(max(res[kept])) if kept else float('nan'),
+        'max_residual_used_px': float(max(res[used])) if used else float('nan'),
+        'dropped': [tmpl['labels'][slot[i]] for i in range(len(slot))
+                    if slot[i] >= 0 and not 0 <= tmpl['order'][slot[i]] < TRACE_N_ORDERS],
+        'rejected_y_px': [round(float(diag['y_centre'][i]), 2) for i in range(len(slot)) if slot[i] < 0],
+        'cost_best': diag['cost_best'],
+        'runner_up_offset_px': diag['runner_up_offset_px'],
+        'cost_runner_up': diag['cost_runner_up'],
+        'template': os.path.basename(tmpl['path']),
+    }
+    return c_all, info
+
+
+def legacy_trace_ok(c_all, npix, o0=TRACE_O0, n_useful=TRACE_N_USEFUL, template=None):
+    """True iff a pre-1.2 72-row c_all (get_them output after c_all[2:]) is the
+    identity labelling, i.e. row 2j is order j ob and row 2j+1 order j co for every
+    row. Never raises."""
+    try:
+        c_all = np.asarray(c_all, dtype=float)
+        if c_all.ndim != 2 or c_all.shape[0] != 2 * TRACE_N_ORDERS:
+            return False
+        tmpl = load_trace_template(template)
+        off, slot, res, diag = _match_traces(c_all, npix, o0, n_useful, template)
+        want = [int(np.where((tmpl['order'] == j // 2) &
+                             (tmpl['fibre'] == ('ob' if j % 2 == 0 else 'co')))[0][0])
+                for j in range(2 * TRACE_N_ORDERS)]
+        return bool(np.array_equal(slot, want))
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Wavelength-solution quality: ThAr grading, reference selection and the
 # calibration assessment (ceres3 1.2).
 #

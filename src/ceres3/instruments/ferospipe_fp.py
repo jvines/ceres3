@@ -440,10 +440,17 @@ for fsim in ThAr_Ne_ref:
     thar_fits_ob = calib_dir + fsim.split('/')[-1][:-4]+'spec.ob.fits.S'
     thar_fits_co = calib_dir + fsim.split('/')[-1][:-4]+'spec.co.fits.S'
 
+    # A cached extraction made with a different trace has the wrong number of
+    # orders, and every order of it is a different physical order: redo it
+    # rather than reading it back (or, worse, refusing the night downstream).
+    stale_thar = ferosutils_fp.extraction_order_mismatch([thar_fits_ob, thar_fits_co], nord_ob)
+
     if ( os.access(thar_fits_ob,os.F_OK) == False ) or \
        ( os.access(thar_fits_co,os.F_OK) == False ) or \
-       (force_thar_extract):
+       (force_thar_extract) or stale_thar:
 
+        if stale_thar:
+            print(f"\t\t{stale_thar} -> re-extracting")
         print(f"\t\tNo previous extraction or extraction forced for ThAr file {fsim}, extracting...")
 
         _t0 = time.perf_counter()

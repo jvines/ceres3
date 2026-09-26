@@ -1669,6 +1669,13 @@ def XC_Final_Fit( X, Y, usemin=True, sigma_res = 1.5, horder=20, moonv = 0., moo
     else:
         p0[0] = np.max(Y) - (1.0 + p0[3])
 
+    if len(X) < n:
+        # Fewer CCF points than free parameters: leastsq raises TypeError, which
+        # used to abort the whole night's reduction on a single faint frame.
+        # Report a failed fit for this frame and let the caller carry on.
+        print(f"			WARNING: CCF has {len(X)} points for a {n}-parameter fit; no fit")
+        return np.zeros(n), np.zeros(len(X)), np.zeros(3), np.zeros(len(X)), (np.array([], dtype=int),)
+
     p1, success = scipy.optimize.leastsq(errfunc,p0, args=(X,Y,horder,norms, herms))
     predicted = fitfunc(p1,X,horder,norms,herms)
     mean = p1[1]
@@ -1687,7 +1694,11 @@ def XC_Final_Fit( X, Y, usemin=True, sigma_res = 1.5, horder=20, moonv = 0., moo
 
     L2 = np.where( np.abs(X - mean) <= sigma_res * sigma0)
 
-    if (len(L2[0]) > 0):
+    # scipy.optimize.leastsq raises TypeError when it is given fewer residuals
+    # than free parameters, which killed the whole night's reduction on one
+    # faint frame whose CCF had 2 usable points. Too few points is a failed
+    # fit, not a crash: fall through to the zero solution below.
+    if (len(L2[0]) >= n):
         norms, herms = get_herms(horder)
         p1_gau0, success_gau = scipy.optimize.leastsq(errfunc,p0, args=(X[L2],Y[L2],horder,norms,herms))
     else:
@@ -1700,7 +1711,7 @@ def XC_Final_Fit( X, Y, usemin=True, sigma_res = 1.5, horder=20, moonv = 0., moo
 
     if moon:
             p1_gau0 = np.append(p1_gau0, f0)
-            if (len(L2[0]) > 0):
+            if (len(L2[0]) >= n + 1):
                 norms, herms = get_herms(horder)
                 p1_gau, success_gau = scipy.optimize.leastsq(errfunc2,p1_gau0, args=(X[L2],Y[L2],horder,norms,herms,moonv,moons))
                 predicted_gau = fitfunc2(p1_gau,X[L2],horder,norms,herms,moonv,moons)
@@ -1708,7 +1719,7 @@ def XC_Final_Fit( X, Y, usemin=True, sigma_res = 1.5, horder=20, moonv = 0., moo
                 p1_gau = np.zeros(n)
                 predicted_gau = np.zeros( len(X[L2]) )
     else:
-            if (len(L2[0]) > 0):
+            if (len(L2[0]) >= n):
                 norms, herms = get_herms(horder)
                 p1_gau, success_gau = scipy.optimize.leastsq(errfunc,p1_gau0, args=(X[L2],Y[L2],horder,norms,herms))
                 predicted_gau = fitfunc(p1_gau,X[L2],horder,norms,herms)

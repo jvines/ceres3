@@ -1294,3 +1294,27 @@ def write_extraction_provenance(dirout, provenance):
         json.dump(_jsonable(provenance), f, indent=1, sort_keys=True)
     os.replace(tmp, path)
     return path
+
+
+def extraction_order_mismatch(paths, nord_expected):
+    """
+    Message describing a cached extraction whose order count is not
+    ``nord_expected``, or None when they all agree (or cannot be read).
+
+    An extraction carries one row per traced order, so a file written with a
+    different trace holds different physical orders under the same indices.
+    Reading it back is what shifted every order's line list on the nights that
+    had been traced by a pre-1.2 ceres3.
+    """
+    for path in paths:
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with pyfits.open(path, memmap=True) as h:
+                shape = h[0].data.shape
+        except Exception:
+            continue
+        if shape and int(shape[0]) != int(nord_expected):
+            return (f'{os.path.basename(path)} holds {int(shape[0])} orders but the trace has '
+                    f'{int(nord_expected)}: it was extracted with another trace')
+    return None

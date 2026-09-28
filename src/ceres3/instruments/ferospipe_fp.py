@@ -2131,6 +2131,28 @@ if (not JustExtract):
         if (RVerr2 <= 0.002):
             RVerr2 = 0.002
 
+        # The reported RV is the centre of an unconstrained least-squares fit to
+        # the averaged CCF, while the CCF itself was only sampled over vels
+        # (the coarse search is bounded by velw=300 km/s and the fine one by
+        # vel0_xc +- max(20, 6*disp)). On a faint, fast-rotating frame the fit
+        # can walk far outside that window and still return a photon-noise
+        # error with a 2 m/s floor: 2018-01-25 HATS602-066 reported
+        # 6008.8 +- 0.002 km/s from a grid that never reached past ~570 km/s.
+        # A centre outside the sampled velocities is not a measurement of this
+        # star, so say so in the product instead of leaving the number to be
+        # read as an RV.
+        rv_in_grid = bool(np.isfinite(p1gau_m[1]) and vels.min() <= p1gau_m[1] <= vels.max())
+        rv_flag_reason = 'ok'
+        if not rv_in_grid:
+            rv_flag_reason = (f'CCF fit centre {p1gau_m[1]:.0f} outside the sampled '
+                              f'{vels.min():.0f}..{vels.max():.0f} km/s')[:60]
+            _pipeline_warnings.append(
+                f"{fsim.split('/')[-1]}: the CCF fit centre ({p1gau_m[1]:.1f} km/s) lies outside the "
+                f"velocities the CCF was computed over ({vels.min():.0f}..{vels.max():.0f} km/s), so its "
+                f"RV is not a measurement of this star (SNR {SNR_5130:.0f}, dispersion {p1gau_m[2]:.1f} km/s); "
+                "flagged GOOD QUALITY RV = F")
+            print(f'WARNING: {_pipeline_warnings[-1]}')
+
         RV     = np.around(p1gau_m[1],4)
         BS     = np.around(SP,4)
         BS2     = np.around(SP2,4)
@@ -2153,6 +2175,8 @@ if (not JustExtract):
         # write to output
         disp_epoch = np.around(p1gau_m[2],1)
         hdu[0] = GLOBALutils.update_header(hdu[0],'RV', RV)
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH GOOD QUALITY RV', rv_in_grid)
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH RV FLAG REASON', rv_flag_reason)
         hdu[0] = GLOBALutils.update_header(hdu[0],'RV_E', RVerr2)
         hdu[0] = GLOBALutils.update_header(hdu[0],'BS', BS)
         hdu[0] = GLOBALutils.update_header(hdu[0],'BS_E', BSerr)

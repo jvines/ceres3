@@ -2188,6 +2188,12 @@ if (not JustExtract):
         hdu[0] = GLOBALutils.update_header(hdu[0],'RESOL', '50000')
         hdu[0] = GLOBALutils.update_header(hdu[0],'PIPELINE', 'CERES')
         hdu[0] = GLOBALutils.update_header(hdu[0],'XC_MIN', XC_min)
+        # Which mask the CCF was correlated against. Until now this only existed
+        # in the product filenames (``_XC_<sp_type>.pkl``, ``_XCs_<sp_type>.pdf``),
+        # so every consumer reading the header had to guess — ExoAutomata stored
+        # 'unknown' for every FEROS epoch it ingested. XC_MIN and RV mean nothing
+        # without it: a G2 mask on an early-type star gives no dip at all.
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MASK', sp_type)
         hdu[0] = GLOBALutils.update_header(hdu[0],'BJD_OUT', bjd_out)
 
         # Activity indicators + merged 1D rest-frame spectrum

@@ -1847,41 +1847,6 @@ except Exception:  # pragma: no cover - numba is an optional accelerator
 if HAVE_NUMBA:
 
     @_njit(cache=True, fastmath=False)
-    def _linefit_residual(p, x, n, y, w, out):
-        d = _SQRT2 * p[0]
-        for k in range(x.shape[0]):
-            acc = 0.0
-            for i in range(n):
-                mu = p[i * 2 + 2]
-                acc += p[i * 2 + 1] * 0.5 * (
-                    _math.erf((x[k] + 0.5 - mu) / d) - _math.erf((x[k] - 0.5 - mu) / d)
-                )
-            out[k] = (acc - y[k]) * w[k]
-        return out
-
-    @_njit(cache=True, fastmath=False)
-    def _linefit_jacobian(p, x, n, w, jac):
-        sigma = p[0]
-        d = _SQRT2 * sigma
-        for k in range(x.shape[0]):
-            dsigma = 0.0
-            for i in range(n):
-                amp = p[i * 2 + 1]
-                mu = p[i * 2 + 2]
-                u1 = (x[k] + 0.5 - mu) / d
-                u2 = (x[k] - 0.5 - mu) / d
-                g1 = _math.exp(-u1 * u1) * _INV_SQRTPI
-                g2 = _math.exp(-u2 * u2) * _INV_SQRTPI
-                dsigma += amp * (g2 * u2 - g1 * u1) / sigma
-                jac[k, i * 2 + 1] = 0.5 * (_math.erf(u1) - _math.erf(u2)) * w[k]
-                jac[k, i * 2 + 2] = amp * (g2 - g1) / d * w[k]
-            jac[k, 0] = dsigma * w[k]
-        return jac
-
-
-if HAVE_NUMBA:
-
-    @_njit(cache=True, fastmath=False)
     def _joint_poly_cheby_kernel(p, basis, nx, nm, out):
         """Compiled Joint_Polynomial_Cheby.
 
@@ -2413,28 +2378,7 @@ def LineFit_SingleSigma(X, Y, B, mu, sigma, weight,pixelization=False):
 
     # perform fit
     #plot(X,Y-B,'b')
-    if HAVE_NUMBA and not pixelization:
-        # Compiled residual + analytic Jacobian; 6.9x the numpy path, with the
-        # centroid agreeing to ten decimal places. pixelization keeps the numpy
-        # path because it reshapes the model onto a supersampled grid, and the
-        # FEROS pipeline never enables it.
-        Xc = np.ascontiguousarray(X, dtype=np.float64)
-        Yc = np.ascontiguousarray(Y - B, dtype=np.float64)
-        Wc = np.ascontiguousarray(weight, dtype=np.float64)
-        resid_buf = np.empty(Xc.shape[0], dtype=np.float64)
-        jac_buf = np.empty((Xc.shape[0], 2 * n + 1), dtype=np.float64)
-
-        def _resid(pp, *_):
-            return _linefit_residual(np.ascontiguousarray(pp, dtype=np.float64),
-                                     Xc, n, Yc, Wc, resid_buf)
-
-        def _jacobian(pp, *_):
-            return _linefit_jacobian(np.ascontiguousarray(pp, dtype=np.float64),
-                                     Xc, n, Wc, jac_buf)
-
-        p1, success = scipy.optimize.leastsq(_resid, p0, Dfun=_jacobian)
-    else:
-        p1, success = scipy.optimize.leastsq(errfunc,p0, args=(X,n,Y-B, weight))
+    p1, success = scipy.optimize.leastsq(errfunc,p0, args=(X,n,Y-B, weight))
     #print p1
     #plot(X,fitfunc(p1,X,n),'r')
     # build output consistent with LineFit

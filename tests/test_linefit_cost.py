@@ -14,8 +14,14 @@ Two things were pure overhead and both are bit-identical to remove:
 Measured together: ``LineFit_SingleSigma`` 383.3 -> 315.4 us per fit (17.7%),
 with the fitted centroid identical to ten decimal places.
 
-An analytic Jacobian was tried and rejected: 0.98x, because building it in Python
-costs what it saves in function evaluations.
+An analytic Jacobian was tried and rejected twice. In pure Python it was 0.98x --
+building it costs what it saves in function evaluations. Compiled with numba it
+was genuinely fast (355 -> 51 us per fit, 6.9x), but it replaces
+scipy.special.erf (Cephes) with math.erf (libm), and those differ in the last
+bit. Re-reducing a real night, that perturbation changed which lines survived
+culling and moved the reported ThAr drift by 1.2 m/s (scatter, max 4.8) against
+a 2.3-2.9 m/s precision floor. It was removed; the remaining changes here are
+bit-identical.
 """
 from __future__ import annotations
 
@@ -114,83 +120,3 @@ class TestSpeed:
         # The original measured 383 us on this machine class; allow generous room
         # for slower hardware while still catching a regression to the old cost.
         assert per_fit < 2e-3, f"{per_fit*1e6:.0f} us/fit"
-
-
-class TestNumbaPathMatchesNumpy:
-    """The compiled path must agree with the interpreted one it replaces.
-
-    Not bit-identical by construction: the kernels use ``math.erf`` (libm) while
-    the numpy path uses ``scipy.special.erf`` (Cephes), which can differ in the
-    last bit. Measured consequence on a fitted centroid: ~2e-12 px, which at
-    ~1 km/s per pixel is ~2e-9 m/s — twelve orders of magnitude below anything
-    this pipeline measures. The tolerances below are set to catch a real
-    divergence, not that noise.
-    """
-
-    @staticmethod
-    def _inputs(n=1, seed=11):
-        rng = np.random.default_rng(seed)
-        width = 21 + 10 * (n - 1)
-        x = np.arange(1000, 1000 + width, dtype=float)
-        mu = np.array([1010.0 + 8 * i for i in range(n)])
-        sigma = np.zeros(n) + 2.2
-        y = sum(5000 * G.IntGaussian(x, m, 2.2) for m in mu) + rng.normal(0, 5, width)
-        return x, y, np.zeros(width), mu, sigma, np.ones(width)
-
-    @pytest.mark.skipif(not G.HAVE_NUMBA, reason="numba not installed")
-    @pytest.mark.parametrize("n", [1, 2, 3])
-    def test_both_paths_fit_the_same_line(self, monkeypatch, n):
-        args = self._inputs(n)
-        compiled, _ = G.LineFit_SingleSigma(*args)
-        monkeypatch.setattr(G, "HAVE_NUMBA", False)
-        interpreted, _ = G.LineFit_SingleSigma(*args)
-        for i in range(n):
-            # centre and sigma, in pixels
-            assert abs(compiled[i * 3 + 1] - interpreted[i * 3 + 1]) < 1e-6
-            assert abs(compiled[i * 3 + 2] - interpreted[i * 3 + 2]) < 1e-6
-            # intensity, relative
-            assert abs(compiled[i * 3] - interpreted[i * 3]) / abs(interpreted[i * 3]) < 1e-9
-
-    @pytest.mark.skipif(not G.HAVE_NUMBA, reason="numba not installed")
-    def test_the_analytic_jacobian_is_correct(self):
-        """A wrong Jacobian can still converge, just slowly — check it directly."""
-        x, y, b, mu, sigma, w = self._inputs(1)
-        p = np.array([2.2, 5000.0, 1010.0])
-        jac = G._linefit_jacobian(p, np.ascontiguousarray(x), 1,
-                                  np.ascontiguousarray(w),
-                                  np.empty((x.size, 3)))
-        buf = np.empty(x.size)
-        for j in range(3):
-            step = 1e-6 * max(abs(p[j]), 1.0)
-            hi, lo = p.copy(), p.copy()
-            hi[j] += step; lo[j] -= step
-            numeric = (G._linefit_residual(hi, np.ascontiguousarray(x), 1,
-                                           np.zeros_like(x), np.ascontiguousarray(w), buf).copy()
-                       - G._linefit_residual(lo, np.ascontiguousarray(x), 1,
-                                             np.zeros_like(x), np.ascontiguousarray(w), buf).copy()
-                       ) / (2 * step)
-            assert np.allclose(jac[:, j], numeric, rtol=1e-5, atol=1e-8), f"param {j}"
-
-    @pytest.mark.skipif(not G.HAVE_NUMBA, reason="numba not installed")
-    def test_the_compiled_path_is_materially_faster(self, monkeypatch):
-        import time
-
-        args = self._inputs(1)
-        G.LineFit_SingleSigma(*args)  # warm the JIT
-        t0 = time.perf_counter()
-        for _ in range(200):
-            G.LineFit_SingleSigma(*args)
-        t_compiled = (time.perf_counter() - t0) / 200
-
-        monkeypatch.setattr(G, "HAVE_NUMBA", False)
-        t0 = time.perf_counter()
-        for _ in range(200):
-            G.LineFit_SingleSigma(*args)
-        t_interp = (time.perf_counter() - t0) / 200
-        assert t_compiled < t_interp / 2, f"only {t_interp/t_compiled:.1f}x"
-
-    def test_missing_numba_is_not_fatal(self, monkeypatch):
-        """The numpy path must remain usable: numba is an accelerator, not a need."""
-        monkeypatch.setattr(G, "HAVE_NUMBA", False)
-        p, _ = G.LineFit_SingleSigma(*self._inputs(1))
-        assert abs(p[1] - 1010.0) < 0.5

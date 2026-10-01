@@ -18,6 +18,31 @@ from scipy import signal, special, optimize, interpolate, integrate
 if not hasattr(integrate, 'simps'):
     integrate.simps = integrate.simpson
 import scipy.special as sp
+
+from functools import lru_cache as _lru_cache
+
+
+@_lru_cache(maxsize=128)
+def chebyt_poly(degree):
+    """Chebyshev polynomial T_degree, constructed once per degree.
+
+    ``scipy.special.chebyt(n)`` builds an ``orthopoly1d``, which computes the
+    polynomial's roots (``roots_chebyt``) and assembles a ``poly1d``. That is
+    expensive, and the wavelength solution was paying it on every evaluation:
+    profiling a live FEROS calibration reduction put ~25% of the whole night in
+    ``chebyt`` / ``roots_chebyt`` / ``poly1d.__init__`` (EXOAUTOMAT-287).
+
+    Caching the object keeps the arithmetic **bit-identical** — the same
+    polynomial is evaluated, merely not rebuilt. Measured 9.2x faster for the
+    order-8 basis over 2048 pixels (0.773 -> 0.084 ms) and 4.6x at order 10 over
+    4096. ``numpy.polynomial.chebyshev.chebvander`` is a further 2x on top of
+    that, but differs at the 1e-15 level, and this is the RV pipeline: speed is
+    not worth perturbing the solution.
+
+    The returned object is shared, so callers must not mutate its coefficients.
+    Nothing in ceres3 does; it is only ever evaluated.
+    """
+    return sp.chebyt(degree)
 import requests
 import statsmodels.api as sm
 from astropy.io import fits as pyfits
@@ -2168,7 +2193,7 @@ def Cheby_Fit(x,y,order,npix):
     def get_chebs(x,order):
         chebs = []
         for i in range(0,order+1):
-            chebs.append( scipy.special.chebyt(i)(x) )
+            chebs.append( chebyt_poly(i)(x) )
         return chebs
 
     p0 = np.zeros( order + 1 )
@@ -2186,7 +2211,7 @@ def Cheby_eval(p,x,npix):
     order = len(p) - 1
     ret_val = 0.0
     for i in range(order + 1):
-        ret_val += p[order - i]*scipy.special.chebyt(i)(x_norm)
+        ret_val += p[order - i]*chebyt_poly(i)(x_norm)
 
     return ret_val
 
@@ -2583,9 +2608,9 @@ def Calculate_chebs(x,m, order0=89, ntotal=70,npix=2048.,Inverse=False,nx=5,nm=6
     if m_norm.shape != x_norm.shape:
         m_norm = np.full_like(x_norm, m_norm.flat[0])
     for i in range(nx):
-        coefs.append(sp.chebyt(i+1)(x_norm))
+        coefs.append(chebyt_poly(i+1)(x_norm))
     for i in range(nm):
-        coefs.append(sp.chebyt(i+1)(m_norm))
+        coefs.append(chebyt_poly(i+1)(m_norm))
     """
     u = sp.chebyt(1)(x_norm)
     u2 = sp.chebyt(2)(x_norm)

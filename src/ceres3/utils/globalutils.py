@@ -73,79 +73,6 @@ from ceres3.ext import CCF, Marsh
 
 lowess = sm.nonparametric.lowess
 
-
-# Background smoothing works on scales far larger than a pixel, and every caller
-# immediately linear-splines the result onto the full grid, so regressing at
-# every one of ~2000 pixels is wasted work. Median-binning first is both cheaper
-# and more robust to residual line wings that survived masking.
-#
-# Measured on a ThAr-like trace (2048 px, 180 lines, sigma 3 ADU background 300):
-# the dense call takes 53.6 ms and lands 1.25 ADU (max) from the true
-# background; binning to 128 lands 1.84 ADU from truth in 9.5 ms. The binned
-# result differs from the dense one by at most 1.4 ADU -- the same size as the
-# dense method's own error -- so this is within the existing error budget rather
-# than a new approximation on top of it. See EXOAUTOMAT-287.
-#
-# lowess(it=...) is NOT the knob to turn: dropping the robustifying iterations
-# to it=1 is only 1.8x faster and moves the background by 3583 ADU, because the
-# iterations are what reject the lines.
-BACKGROUND_SMOOTH_BINS = 512
-BACKGROUND_SMOOTH_FRAC = 0.3
-BACKGROUND_MIN_BINNED_POINTS = 16
-
-
-def smoothed_background(x_valid, y_valid, x_out,
-                        nbins=BACKGROUND_SMOOTH_BINS,
-                        frac=BACKGROUND_SMOOTH_FRAC, it=3):
-    """Smooth background through ``(x_valid, y_valid)``, evaluated at ``x_out``.
-
-    Median-bins the masked points, smooths the bin medians with lowess, then
-    linear-interpolates onto ``x_out`` -- which is what the callers did with the
-    dense result anyway.
-
-    Falls back to the original dense call when binning would leave too few
-    points to smooth (short orders, heavily masked traces), so behaviour is
-    unchanged exactly where the approximation would be least safe.
-    """
-    x_valid = np.asarray(x_valid, dtype='double')
-    y_valid = np.asarray(y_valid, dtype='double')
-    if x_valid.size == 0:
-        return np.zeros(np.size(x_out))
-
-    # splrep needs at least two distinct abscissae; duplicates give NaN. The
-    # dense path had the same hazard, so this is also a robustness fix: a trace
-    # whose valid pixels all share one x now yields a constant, not NaN.
-    if np.unique(x_valid).size < 2:
-        return np.full(np.size(x_out), float(np.median(y_valid)))
-
-    span = float(x_valid.max() - x_valid.min())
-    use_bins = span > 0 and x_valid.size >= nbins * 2
-
-    if use_bins:
-        edges = np.linspace(x_valid.min(), x_valid.max(), nbins + 1)
-        which = np.clip(np.digitize(x_valid, edges) - 1, 0, nbins - 1)
-        xb, yb = [], []
-        for b in range(nbins):
-            sel = which == b
-            if np.count_nonzero(sel) >= 3:
-                xb.append(np.median(x_valid[sel]))
-                yb.append(np.median(y_valid[sel]))
-        if len(xb) >= BACKGROUND_MIN_BINNED_POINTS:
-            x_fit = np.asarray(xb, dtype='double')
-            y_fit = np.asarray(yb, dtype='double')
-        else:
-            use_bins = False
-
-    if not use_bins:
-        x_fit, y_fit = x_valid, y_valid
-        frac = 0.2
-
-    smoothed = lowess(y_fit, x_fit, frac=frac, it=it, return_sorted=False)
-    if np.size(x_fit) < 2:
-        return np.full(np.size(x_out), float(np.median(y_fit)))
-    tck = scipy.interpolate.splrep(x_fit, smoothed, k=1)
-    return scipy.interpolate.splev(x_out, tck)
-
 global GDATA, GDATA_FLAT, GDATA_XCOLS, P, P_FLAT
 
 
@@ -3066,7 +2993,9 @@ def Lines_mBack(thar, sd, thres_rel=3, line_w=10):
     K = np.where((sd > 0) & (mask > 0))
     if len(K[0])>0:
         bkg = np.zeros( len(sd) )
-        bkg[L] = smoothed_background(X[K], thar[K].astype('double'), X[L])
+        bkg_T = lowess(thar[K].astype('double'), X[K],frac=0.2,it=3,return_sorted=False)
+        tck1 = scipy.interpolate.splrep(X[K],bkg_T,k=1)
+        bkg[L] = scipy.interpolate.splev(X[L],tck1)
         return bkg
     else:
         return np.zeros( len(sd) )

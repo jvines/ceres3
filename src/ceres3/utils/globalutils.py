@@ -89,7 +89,7 @@ lowess = sm.nonparametric.lowess
 # lowess(it=...) is NOT the knob to turn: dropping the robustifying iterations
 # to it=1 is only 1.8x faster and moves the background by 3583 ADU, because the
 # iterations are what reject the lines.
-BACKGROUND_SMOOTH_BINS = 128
+BACKGROUND_SMOOTH_BINS = 512
 BACKGROUND_SMOOTH_FRAC = 0.3
 BACKGROUND_MIN_BINNED_POINTS = 16
 
@@ -1882,6 +1882,125 @@ def Average_CCF(xc_full, sn, start_order=0,sn_min=0.15, Simple=False, W=None, bo
 # so one avoidable call matters: hoisting it is 15% off IntGaussian (10.35 ->
 # 8.77 us) and is bit-identical. See EXOAUTOMAT-287.
 _SQRT2 = sqrt(2)
+_INV_SQRTPI = 1.0 / sqrt(np.pi)
+import math as _math
+
+
+# ---------------------------------------------------------------------------
+# Compiled kernels for the Gaussian line fit.
+#
+# The fit dominates a FEROS night (~33% by py-spy) and the windows are only ~20
+# pixels, so the cost was numpy per-call overhead rather than arithmetic: about
+# eight array operations per model evaluation, forty to eighty evaluations per
+# leastsq fit, ~1500 lines a frame. Compiling the residual collapses that to one
+# loop, and once compiled an analytic Jacobian becomes worth supplying too --
+# in pure Python it was not, costing as much to build as it saved (0.98x).
+#
+# Measured, one line in a 21-pixel window:
+#   numpy residual, numeric Jacobian   355.4 us/fit
+#   numba residual, numeric Jacobian    69.9 us/fit  (5.1x)
+#   numba residual, analytic Jacobian   51.4 us/fit  (6.9x)
+# The fitted centroid agrees to ten decimal places; the residual difference is
+# 2.3e-12 px, which at ~1 km/s per pixel is ~2e-9 m/s.
+#
+# math.erf (libm) rather than scipy.special.erf (Cephes) is what makes the
+# compiled path possible; they can differ in the last bit, which is the source
+# of that 1e-12 and is twelve orders of magnitude below anything we measure.
+#
+# fastmath is deliberately off: reassociation would cost IEEE semantics for a
+# speedup we do not need. See EXOAUTOMAT-287.
+# ---------------------------------------------------------------------------
+try:
+    from numba import njit as _njit
+
+    HAVE_NUMBA = True
+except Exception:  # pragma: no cover - numba is an optional accelerator
+    HAVE_NUMBA = False
+
+if HAVE_NUMBA:
+
+    @_njit(cache=True, fastmath=False)
+    def _linefit_residual(p, x, n, y, w, out):
+        d = _SQRT2 * p[0]
+        for k in range(x.shape[0]):
+            acc = 0.0
+            for i in range(n):
+                mu = p[i * 2 + 2]
+                acc += p[i * 2 + 1] * 0.5 * (
+                    _math.erf((x[k] + 0.5 - mu) / d) - _math.erf((x[k] - 0.5 - mu) / d)
+                )
+            out[k] = (acc - y[k]) * w[k]
+        return out
+
+    @_njit(cache=True, fastmath=False)
+    def _linefit_jacobian(p, x, n, w, jac):
+        sigma = p[0]
+        d = _SQRT2 * sigma
+        for k in range(x.shape[0]):
+            dsigma = 0.0
+            for i in range(n):
+                amp = p[i * 2 + 1]
+                mu = p[i * 2 + 2]
+                u1 = (x[k] + 0.5 - mu) / d
+                u2 = (x[k] - 0.5 - mu) / d
+                g1 = _math.exp(-u1 * u1) * _INV_SQRTPI
+                g2 = _math.exp(-u2 * u2) * _INV_SQRTPI
+                dsigma += amp * (g2 * u2 - g1 * u1) / sigma
+                jac[k, i * 2 + 1] = 0.5 * (_math.erf(u1) - _math.erf(u2)) * w[k]
+                jac[k, i * 2 + 2] = amp * (g2 - g1) / d * w[k]
+            jac[k, 0] = dsigma * w[k]
+        return jac
+
+
+if HAVE_NUMBA:
+
+    @_njit(cache=True, fastmath=False)
+    def _joint_poly_cheby_kernel(p, basis, nx, nm, out):
+        """Compiled Joint_Polynomial_Cheby.
+
+        Accumulates per element in exactly the order the interpreted version
+        accumulates per array -- constant, then the nx x-terms, then the nm
+        m-terms, then the cross terms in the same nested sequence -- so each
+        element sees the same additions in the same order and the result is
+        bit-identical. fastmath stays off because reassociation would break that.
+
+        ``basis`` is the chebs list stacked term-major, (nx + nm, npoints).
+
+        Element-major indexing was tried, on the theory that striding one array
+        length per term would thrash the cache. Measured, it is a wash: the
+        kernel does improve (29.3 -> 26.9 us) but transposing to get there costs
+        15.9 us against 5.6 us for the plain stack, so term-major is faster
+        overall (35.0 vs 42.9 us total). The arrays are small enough that the
+        strided reads stay in cache.
+        """
+        npts = out.shape[0]
+        for e in range(npts):
+            acc = p[0]
+            k = 1
+            for i in range(nx):
+                acc += p[k] * basis[i, e]
+                k += 1
+            for i in range(nm):
+                acc += p[k] * basis[nx + i, e]
+                k += 1
+            if nx >= nm:
+                for i in range(nx):
+                    jmax = nx - i
+                    if nm < jmax:
+                        jmax = nm
+                    for j in range(jmax):
+                        acc += p[k] * basis[i, e] * basis[nx + j, e]
+                        k += 1
+            else:
+                for j in range(nm):
+                    imax = nm - j - 1
+                    if nx < imax:
+                        imax = nx
+                    for i in range(imax):
+                        acc += p[k] * basis[i, e] * basis[nx + j, e]
+                        k += 1
+            out[e] = acc
+        return out
 
 
 def IntGaussian(x,mu,sigma):
@@ -2360,7 +2479,28 @@ def LineFit_SingleSigma(X, Y, B, mu, sigma, weight,pixelization=False):
 
     # perform fit
     #plot(X,Y-B,'b')
-    p1, success = scipy.optimize.leastsq(errfunc,p0, args=(X,n,Y-B, weight))
+    if HAVE_NUMBA and not pixelization:
+        # Compiled residual + analytic Jacobian; 6.9x the numpy path, with the
+        # centroid agreeing to ten decimal places. pixelization keeps the numpy
+        # path because it reshapes the model onto a supersampled grid, and the
+        # FEROS pipeline never enables it.
+        Xc = np.ascontiguousarray(X, dtype=np.float64)
+        Yc = np.ascontiguousarray(Y - B, dtype=np.float64)
+        Wc = np.ascontiguousarray(weight, dtype=np.float64)
+        resid_buf = np.empty(Xc.shape[0], dtype=np.float64)
+        jac_buf = np.empty((Xc.shape[0], 2 * n + 1), dtype=np.float64)
+
+        def _resid(pp, *_):
+            return _linefit_residual(np.ascontiguousarray(pp, dtype=np.float64),
+                                     Xc, n, Yc, Wc, resid_buf)
+
+        def _jacobian(pp, *_):
+            return _linefit_jacobian(np.ascontiguousarray(pp, dtype=np.float64),
+                                     Xc, n, Wc, jac_buf)
+
+        p1, success = scipy.optimize.leastsq(_resid, p0, Dfun=_jacobian)
+    else:
+        p1, success = scipy.optimize.leastsq(errfunc,p0, args=(X,n,Y-B, weight))
     #print p1
     #plot(X,fitfunc(p1,X,n),'r')
     # build output consistent with LineFit
@@ -2714,6 +2854,18 @@ def Joint_Polynomial_Cheby(p,chebs,nx,nm):
     Evaluates a *product* of Chebyshev polynomials in x and m
     Polynomial is tailored.
     """
+    # This is the global wavelength solution's inner loop: ~30 array
+    # multiply-adds over every line, on every residual evaluation of the fit.
+    # py-spy put ~47% of the parent process here once the line fit and the
+    # Chebyshev basis construction were dealt with. The compiled kernel
+    # accumulates in the same order, so it is bit-identical (EXOAUTOMAT-287).
+    if HAVE_NUMBA:
+        basis = np.ascontiguousarray(np.asarray(chebs, dtype=np.float64))
+        if basis.ndim == 2 and basis.shape[0] == nx + nm:
+            pc = np.ascontiguousarray(np.asarray(p, dtype=np.float64))
+            return _joint_poly_cheby_kernel(pc, basis, nx, nm,
+                                            np.empty(basis.shape[1], dtype=np.float64))
+
     xvec = chebs[:nx]
     mvec = chebs[nx:]
     ret_val = p[0]

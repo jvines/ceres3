@@ -349,9 +349,7 @@ def Lines_mBack(thar, sd,  thres_rel=3, pl=False):
     K = np.where((sd > 0) & (mask > 0))
 
     bkg = np.zeros( len(sd) )
-    bkg_T = lowess(thar[K].astype('double'), X[K],frac=0.2,it=3,return_sorted=False)
-    tck1 = scipy.interpolate.splrep(X[K],bkg_T,k=1)
-    bkg[L] = scipy.interpolate.splev(X[L],tck1)
+    bkg[L] = GLOBALutils.smoothed_background(X[K], thar[K].astype('double'), X[L])
 
     return bkg
 

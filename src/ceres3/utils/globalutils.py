@@ -18,6 +18,31 @@ from scipy import signal, special, optimize, interpolate, integrate
 if not hasattr(integrate, 'simps'):
     integrate.simps = integrate.simpson
 import scipy.special as sp
+
+from functools import lru_cache as _lru_cache
+
+
+@_lru_cache(maxsize=128)
+def chebyt_poly(degree):
+    """Chebyshev polynomial T_degree, constructed once per degree.
+
+    ``scipy.special.chebyt(n)`` builds an ``orthopoly1d``, which computes the
+    polynomial's roots (``roots_chebyt``) and assembles a ``poly1d``. That is
+    expensive, and the wavelength solution was paying it on every evaluation:
+    profiling a live FEROS calibration reduction put ~25% of the whole night in
+    ``chebyt`` / ``roots_chebyt`` / ``poly1d.__init__`` (EXOAUTOMAT-287).
+
+    Caching the object keeps the arithmetic **bit-identical** — the same
+    polynomial is evaluated, merely not rebuilt. Measured 9.2x faster for the
+    order-8 basis over 2048 pixels (0.773 -> 0.084 ms) and 4.6x at order 10 over
+    4096. ``numpy.polynomial.chebyshev.chebvander`` is a further 2x on top of
+    that, but differs at the 1e-15 level, and this is the RV pipeline: speed is
+    not worth perturbing the solution.
+
+    The returned object is shared, so callers must not mutate its coefficients.
+    Nothing in ceres3 does; it is only ever evaluated.
+    """
+    return sp.chebyt(degree)
 import requests
 import statsmodels.api as sm
 from astropy.io import fits as pyfits
@@ -1778,15 +1803,111 @@ def Average_CCF(xc_full, sn, start_order=0,sn_min=0.15, Simple=False, W=None, bo
 
     return xc_av
 
+# sqrt(2) was recomputed on every IntGaussian call. The line fit is dominated by
+# numpy overhead on ~20-element windows -- about eight operations per model
+# evaluation, forty to eighty evaluations per leastsq fit, ~1500 lines a frame --
+# so one avoidable call matters: hoisting it is 15% off IntGaussian (10.35 ->
+# 8.77 us) and is bit-identical. See EXOAUTOMAT-287.
+_SQRT2 = sqrt(2)
+
+
+# ---------------------------------------------------------------------------
+# Compiled kernel for the global wavelength solution.
+#
+# Joint_Polynomial_Cheby evaluates ~30 array multiply-adds over every line on
+# every residual evaluation, and once the Chebyshev basis was cached it was ~47%
+# of the parent process by py-spy. Compiling it is 86 -> 35 us.
+#
+# fastmath is deliberately off. The kernel accumulates per element in the order
+# the interpreted version accumulates per array, so every element sees identical
+# additions in identical sequence and the result is bit-identical; reassociation
+# would throw that away for a speedup we do not need.
+#
+# The line fit was compiled too, and that was removed. It was genuinely fast
+# (355 -> 51 us/fit with an analytic Jacobian, 6.9x) but it requires math.erf
+# (libm) in place of scipy.special.erf (Cephes). Those differ in the last bit,
+# and on a re-reduced real night that perturbation changed which lines survived
+# culling and moved the reported ThAr drift by 1.2 m/s scatter -- against a
+# 2.3-2.9 m/s precision floor. It also bought nothing at night level (981.8 s
+# with, 973.3 s without), because a time-weighted profile puts the line fit at
+# ~9% of the parent rather than the ~33% a single-phase profile suggested.
+# Do not re-add it without re-reducing a night and comparing the drift.
+#
+# See EXOAUTOMAT-287.
+# ---------------------------------------------------------------------------
+try:
+    from numba import njit as _njit
+
+    HAVE_NUMBA = True
+except Exception:  # pragma: no cover - numba is an optional accelerator
+    HAVE_NUMBA = False
+
+if HAVE_NUMBA:
+
+    @_njit(cache=True, fastmath=False)
+    def _joint_poly_cheby_kernel(p, basis, nx, nm, out):
+        """Compiled Joint_Polynomial_Cheby.
+
+        Term-outer, element-inner. Each element's accumulator still receives the
+        constant, then the nx x-terms, then the nm m-terms, then the cross terms
+        in the same nested sequence as the interpreted version, so the result is
+        bit-identical -- the elements are simply interleaved differently, and
+        their accumulators are independent. fastmath stays off because
+        reassociation would break that.
+
+        The obvious element-outer form reads ``basis[i, e]`` with i innermost,
+        striding one array length per term, so it neither vectorises nor stays in
+        cache: 28.3 us. Term-outer walks e contiguously and hits 6.4 us for the
+        same arithmetic (4.4x), which is why the loops are this way round.
+
+        ``basis`` is the chebs list stacked term-major, (nx + nm, npoints).
+        """
+        n = out.shape[0]
+        c0 = p[0]
+        for e in range(n):
+            out[e] = c0
+        k = 1
+        for i in range(nx):
+            c = p[k]
+            k += 1
+            for e in range(n):
+                out[e] += c * basis[i, e]
+        for i in range(nm):
+            c = p[k]
+            k += 1
+            for e in range(n):
+                out[e] += c * basis[nx + i, e]
+        if nx >= nm:
+            for i in range(nx):
+                jmax = nx - i
+                if nm < jmax:
+                    jmax = nm
+                for j in range(jmax):
+                    c = p[k]
+                    k += 1
+                    for e in range(n):
+                        out[e] += c * basis[i, e] * basis[nx + j, e]
+        else:
+            for j in range(nm):
+                imax = nm - j - 1
+                if nx < imax:
+                    imax = nx
+                for i in range(imax):
+                    c = p[k]
+                    k += 1
+                    for e in range(n):
+                        out[e] += c * basis[i, e] * basis[nx + j, e]
+        return out
+
+
 def IntGaussian(x,mu,sigma):
     """
 
     Returns Gaussian integrated over a pixel
 
     """
-    s2 = sqrt(2)
-    arg1 = (x+0.5-mu)/(s2*sigma)
-    arg2 = (x-0.5-mu)/(s2*sigma)
+    arg1 = (x+0.5-mu)/(_SQRT2*sigma)
+    arg2 = (x-0.5-mu)/(_SQRT2*sigma)
     ret = 0.5*(special.erf(arg1) - special.erf(arg2))
     return ret
 
@@ -2168,7 +2289,7 @@ def Cheby_Fit(x,y,order,npix):
     def get_chebs(x,order):
         chebs = []
         for i in range(0,order+1):
-            chebs.append( scipy.special.chebyt(i)(x) )
+            chebs.append( chebyt_poly(i)(x) )
         return chebs
 
     p0 = np.zeros( order + 1 )
@@ -2186,7 +2307,7 @@ def Cheby_eval(p,x,npix):
     order = len(p) - 1
     ret_val = 0.0
     for i in range(order + 1):
-        ret_val += p[order - i]*scipy.special.chebyt(i)(x_norm)
+        ret_val += p[order - i]*chebyt_poly(i)(x_norm)
 
     return ret_val
 
@@ -2227,9 +2348,12 @@ def LineFit_SingleSigma(X, Y, B, mu, sigma, weight,pixelization=False):
             xo = x.copy()
             x = np.arange(x[0]-0.5,x[-1]+0.5,0.01)
 
-        ret = np.zeros(len(x))
-        for i in range(n):
-            ret += ( p[i*2+1] * IntGaussian(x,p[i*2+2],p[0]) )
+        if n == 1:
+            ret = p[1] * IntGaussian(x,p[2],p[0])
+        else:
+            ret = np.zeros(len(x))
+            for i in range(n):
+                ret += ( p[i*2+1] * IntGaussian(x,p[i*2+2],p[0]) )
 
         if pixelization:
             ret = ret.reshape((lxo,100))
@@ -2583,9 +2707,9 @@ def Calculate_chebs(x,m, order0=89, ntotal=70,npix=2048.,Inverse=False,nx=5,nm=6
     if m_norm.shape != x_norm.shape:
         m_norm = np.full_like(x_norm, m_norm.flat[0])
     for i in range(nx):
-        coefs.append(sp.chebyt(i+1)(x_norm))
+        coefs.append(chebyt_poly(i+1)(x_norm))
     for i in range(nm):
-        coefs.append(sp.chebyt(i+1)(m_norm))
+        coefs.append(chebyt_poly(i+1)(m_norm))
     """
     u = sp.chebyt(1)(x_norm)
     u2 = sp.chebyt(2)(x_norm)
@@ -2606,6 +2730,18 @@ def Joint_Polynomial_Cheby(p,chebs,nx,nm):
     Evaluates a *product* of Chebyshev polynomials in x and m
     Polynomial is tailored.
     """
+    # This is the global wavelength solution's inner loop: ~30 array
+    # multiply-adds over every line, on every residual evaluation of the fit.
+    # py-spy put ~47% of the parent process here once the line fit and the
+    # Chebyshev basis construction were dealt with. The compiled kernel
+    # accumulates in the same order, so it is bit-identical (EXOAUTOMAT-287).
+    if HAVE_NUMBA:
+        basis = np.ascontiguousarray(np.asarray(chebs, dtype=np.float64))
+        if basis.ndim == 2 and basis.shape[0] == nx + nm:
+            pc = np.ascontiguousarray(np.asarray(p, dtype=np.float64))
+            return _joint_poly_cheby_kernel(pc, basis, nx, nm,
+                                            np.empty(basis.shape[1], dtype=np.float64))
+
     xvec = chebs[:nx]
     mvec = chebs[nx:]
     ret_val = p[0]

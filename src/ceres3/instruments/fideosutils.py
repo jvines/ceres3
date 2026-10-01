@@ -544,7 +544,7 @@ def Cheby_Fit(x,y,order,npix):
     def get_chebs(x,order):
         chebs = []
         for i in range(0,order+1):
-            chebs.append( scipy.special.chebyt(i)(x) )
+            chebs.append( GLOBALutils.chebyt_poly(i)(x) )
         return chebs
 
     p0 = np.zeros( order + 1 )
@@ -562,7 +562,7 @@ def Cheby_eval(p,x,npix):
     order = len(p) - 1
     ret_val = 0.0
     for i in range(order + 1):
-        ret_val += p[order - i]*scipy.special.chebyt(i)(x_norm)
+        ret_val += p[order - i]*GLOBALutils.chebyt_poly(i)(x_norm)
     
     return ret_val
 

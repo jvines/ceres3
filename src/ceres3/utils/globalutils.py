@@ -1876,15 +1876,22 @@ def Average_CCF(xc_full, sn, start_order=0,sn_min=0.15, Simple=False, W=None, bo
 
     return xc_av
 
+# sqrt(2) was recomputed on every IntGaussian call. The line fit is dominated by
+# numpy overhead on ~20-element windows -- about eight operations per model
+# evaluation, forty to eighty evaluations per leastsq fit, ~1500 lines a frame --
+# so one avoidable call matters: hoisting it is 15% off IntGaussian (10.35 ->
+# 8.77 us) and is bit-identical. See EXOAUTOMAT-287.
+_SQRT2 = sqrt(2)
+
+
 def IntGaussian(x,mu,sigma):
     """
 
     Returns Gaussian integrated over a pixel
 
     """
-    s2 = sqrt(2)
-    arg1 = (x+0.5-mu)/(s2*sigma)
-    arg2 = (x-0.5-mu)/(s2*sigma)
+    arg1 = (x+0.5-mu)/(_SQRT2*sigma)
+    arg2 = (x-0.5-mu)/(_SQRT2*sigma)
     ret = 0.5*(special.erf(arg1) - special.erf(arg2))
     return ret
 
@@ -2325,9 +2332,12 @@ def LineFit_SingleSigma(X, Y, B, mu, sigma, weight,pixelization=False):
             xo = x.copy()
             x = np.arange(x[0]-0.5,x[-1]+0.5,0.01)
 
-        ret = np.zeros(len(x))
-        for i in range(n):
-            ret += ( p[i*2+1] * IntGaussian(x,p[i*2+2],p[0]) )
+        if n == 1:
+            ret = p[1] * IntGaussian(x,p[2],p[0])
+        else:
+            ret = np.zeros(len(x))
+            for i in range(n):
+                ret += ( p[i*2+1] * IntGaussian(x,p[i*2+2],p[0]) )
 
         if pixelization:
             ret = ret.reshape((lxo,100))

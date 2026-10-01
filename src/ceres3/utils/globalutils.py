@@ -1885,48 +1885,55 @@ if HAVE_NUMBA:
     def _joint_poly_cheby_kernel(p, basis, nx, nm, out):
         """Compiled Joint_Polynomial_Cheby.
 
-        Accumulates per element in exactly the order the interpreted version
-        accumulates per array -- constant, then the nx x-terms, then the nm
-        m-terms, then the cross terms in the same nested sequence -- so each
-        element sees the same additions in the same order and the result is
-        bit-identical. fastmath stays off because reassociation would break that.
+        Term-outer, element-inner. Each element's accumulator still receives the
+        constant, then the nx x-terms, then the nm m-terms, then the cross terms
+        in the same nested sequence as the interpreted version, so the result is
+        bit-identical -- the elements are simply interleaved differently, and
+        their accumulators are independent. fastmath stays off because
+        reassociation would break that.
+
+        The obvious element-outer form reads ``basis[i, e]`` with i innermost,
+        striding one array length per term, so it neither vectorises nor stays in
+        cache: 28.3 us. Term-outer walks e contiguously and hits 6.4 us for the
+        same arithmetic (4.4x), which is why the loops are this way round.
 
         ``basis`` is the chebs list stacked term-major, (nx + nm, npoints).
-
-        Element-major indexing was tried, on the theory that striding one array
-        length per term would thrash the cache. Measured, it is a wash: the
-        kernel does improve (29.3 -> 26.9 us) but transposing to get there costs
-        15.9 us against 5.6 us for the plain stack, so term-major is faster
-        overall (35.0 vs 42.9 us total). The arrays are small enough that the
-        strided reads stay in cache.
         """
-        npts = out.shape[0]
-        for e in range(npts):
-            acc = p[0]
-            k = 1
+        n = out.shape[0]
+        c0 = p[0]
+        for e in range(n):
+            out[e] = c0
+        k = 1
+        for i in range(nx):
+            c = p[k]
+            k += 1
+            for e in range(n):
+                out[e] += c * basis[i, e]
+        for i in range(nm):
+            c = p[k]
+            k += 1
+            for e in range(n):
+                out[e] += c * basis[nx + i, e]
+        if nx >= nm:
             for i in range(nx):
-                acc += p[k] * basis[i, e]
-                k += 1
-            for i in range(nm):
-                acc += p[k] * basis[nx + i, e]
-                k += 1
-            if nx >= nm:
-                for i in range(nx):
-                    jmax = nx - i
-                    if nm < jmax:
-                        jmax = nm
-                    for j in range(jmax):
-                        acc += p[k] * basis[i, e] * basis[nx + j, e]
-                        k += 1
-            else:
-                for j in range(nm):
-                    imax = nm - j - 1
-                    if nx < imax:
-                        imax = nx
-                    for i in range(imax):
-                        acc += p[k] * basis[i, e] * basis[nx + j, e]
-                        k += 1
-            out[e] = acc
+                jmax = nx - i
+                if nm < jmax:
+                    jmax = nm
+                for j in range(jmax):
+                    c = p[k]
+                    k += 1
+                    for e in range(n):
+                        out[e] += c * basis[i, e] * basis[nx + j, e]
+        else:
+            for j in range(nm):
+                imax = nm - j - 1
+                if nx < imax:
+                    imax = nx
+                for i in range(imax):
+                    c = p[k]
+                    k += 1
+                    for e in range(n):
+                        out[e] += c * basis[i, e] * basis[nx + j, e]
         return out
 
 

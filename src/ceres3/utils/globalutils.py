@@ -1809,33 +1809,31 @@ def Average_CCF(xc_full, sn, start_order=0,sn_min=0.15, Simple=False, W=None, bo
 # so one avoidable call matters: hoisting it is 15% off IntGaussian (10.35 ->
 # 8.77 us) and is bit-identical. See EXOAUTOMAT-287.
 _SQRT2 = sqrt(2)
-_INV_SQRTPI = 1.0 / sqrt(np.pi)
-import math as _math
 
 
 # ---------------------------------------------------------------------------
-# Compiled kernels for the Gaussian line fit.
+# Compiled kernel for the global wavelength solution.
 #
-# The fit dominates a FEROS night (~33% by py-spy) and the windows are only ~20
-# pixels, so the cost was numpy per-call overhead rather than arithmetic: about
-# eight array operations per model evaluation, forty to eighty evaluations per
-# leastsq fit, ~1500 lines a frame. Compiling the residual collapses that to one
-# loop, and once compiled an analytic Jacobian becomes worth supplying too --
-# in pure Python it was not, costing as much to build as it saved (0.98x).
+# Joint_Polynomial_Cheby evaluates ~30 array multiply-adds over every line on
+# every residual evaluation, and once the Chebyshev basis was cached it was ~47%
+# of the parent process by py-spy. Compiling it is 86 -> 35 us.
 #
-# Measured, one line in a 21-pixel window:
-#   numpy residual, numeric Jacobian   355.4 us/fit
-#   numba residual, numeric Jacobian    69.9 us/fit  (5.1x)
-#   numba residual, analytic Jacobian   51.4 us/fit  (6.9x)
-# The fitted centroid agrees to ten decimal places; the residual difference is
-# 2.3e-12 px, which at ~1 km/s per pixel is ~2e-9 m/s.
+# fastmath is deliberately off. The kernel accumulates per element in the order
+# the interpreted version accumulates per array, so every element sees identical
+# additions in identical sequence and the result is bit-identical; reassociation
+# would throw that away for a speedup we do not need.
 #
-# math.erf (libm) rather than scipy.special.erf (Cephes) is what makes the
-# compiled path possible; they can differ in the last bit, which is the source
-# of that 1e-12 and is twelve orders of magnitude below anything we measure.
+# The line fit was compiled too, and that was removed. It was genuinely fast
+# (355 -> 51 us/fit with an analytic Jacobian, 6.9x) but it requires math.erf
+# (libm) in place of scipy.special.erf (Cephes). Those differ in the last bit,
+# and on a re-reduced real night that perturbation changed which lines survived
+# culling and moved the reported ThAr drift by 1.2 m/s scatter -- against a
+# 2.3-2.9 m/s precision floor. It also bought nothing at night level (981.8 s
+# with, 973.3 s without), because a time-weighted profile puts the line fit at
+# ~9% of the parent rather than the ~33% a single-phase profile suggested.
+# Do not re-add it without re-reducing a night and comparing the drift.
 #
-# fastmath is deliberately off: reassociation would cost IEEE semantics for a
-# speedup we do not need. See EXOAUTOMAT-287.
+# See EXOAUTOMAT-287.
 # ---------------------------------------------------------------------------
 try:
     from numba import njit as _njit

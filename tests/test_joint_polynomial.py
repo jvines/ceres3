@@ -105,3 +105,39 @@ class TestSpeed:
 
         assert compiled < interpreted, (
             f"compiled {compiled*1e6:.1f} us vs interpreted {interpreted*1e6:.1f} us")
+
+
+class TestNumbaIsDeclared:
+    """The accelerator must be a declared dependency, not an accident.
+
+    globalutils falls back to the interpreted path when numba is absent, and
+    that path is bit-identical -- so a missing dependency does not produce wrong
+    numbers, it produces a night that is ~20% slower with nothing in the logs to
+    say why. This was briefly real: the dependency was added to a working tree
+    and never committed, so the 1.2.4 sdist and wheel were built without it and
+    installed clean environments with no numba at all.
+    """
+
+    def _dependencies(self):
+        import tomllib
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        pyproject = root / "pyproject.toml"
+        if not pyproject.exists():          # installed, not a source checkout
+            import pytest
+            pytest.skip("pyproject.toml not available outside a source tree")
+        return tomllib.loads(pyproject.read_text())["project"]["dependencies"]
+
+    def test_numba_is_a_runtime_dependency(self):
+        assert any(d.split(">")[0].split("=")[0].strip() == "numba"
+                   for d in self._dependencies()), \
+            "numba missing from [project] dependencies -- the kernel silently " \
+            "falls back and the speedup is lost"
+
+    def test_the_declared_floor_supports_cache_true(self):
+        """cache=True on a kernel taking an out= array needs a modern numba."""
+        spec = next(d for d in self._dependencies() if d.startswith("numba"))
+        floor = spec.split(">=")[1].strip().strip('"')
+        major, minor = (int(p) for p in floor.split(".")[:2])
+        assert (major, minor) >= (0, 61), f"numba floor {floor} is too old"

@@ -18,6 +18,13 @@ dependencies = [
     "astropy>=6.0",
     "PyAstronomy",
     "statsmodels>=0.14",
+    # Compiles the global wavelength solution's inner loop
+    # (Joint_Polynomial_Cheby), ~47% of the parent process on a FEROS night:
+    # 86 -> 35 us per call, bit-identical. Optional at import -- globalutils
+    # falls back to the numpy path when it is missing -- but declared, because
+    # without it the reduction quietly loses most of its speedup and nothing
+    # says so. 0.68 resolves against numpy 2.5 with no downgrade.
+    "numba>=0.61",
     "ephem",
     "requests",
 ]

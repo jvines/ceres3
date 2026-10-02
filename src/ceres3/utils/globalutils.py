@@ -1379,10 +1379,39 @@ def obtain_P(data, trace_coeffs, Aperture, RON, Gain, NSigma, S, N, Marsh_alg,mi
     for i in range(len(trace_coeffs)):
         npars_paralel.append([trace_coeffs[i,:],Aperture,RON,Gain,NSigma,S,N,Marsh_alg,int(min_col[i]),int(max_col[i])])
     if pool is not None:
-        spec = np.array((pool.map(PCoeff2, npars_paralel)))
-    else:
-        spec = np.array((_map_with_owned_pool(npools, (data,), PCoeff2, npars_paralel)))
-    return np.sum(spec,axis=0)
+        return _sum_in_order(pool.imap(PCoeff2, npars_paralel))
+    owned = Pool(npools, initializer=_init_pool_worker, initargs=(data,))
+    try:
+        total = _sum_in_order(owned.imap(PCoeff2, npars_paralel))
+    except Exception:
+        owned.terminate()
+        owned.join()
+        raise
+    owned.close()
+    owned.join()
+    return total
+
+def _sum_in_order(arrays):
+    """
+    Sum per-order arrays as they arrive, in order.
+
+    Each order's P is a full-frame matrix, and obtain_P used to collect all of
+    them from pool.map and then copy them into one stack with np.array before
+    summing: two full stacks at once, 4.8 GB of a FEROS calibration night's 5.05 GB
+    peak (EXOAUTOMAT-266). np.sum over axis 0 starts from the additive identity
+    and adds the slices one after another, so this running sum is the same
+    arithmetic in the same order and gives the same bytes. Starting from zeros
+    rather than from a copy of the first order matters only for a pixel that is
+    -0.0 in every order, which np.sum turns into +0.0.
+    """
+    total = None
+    for a in arrays:
+        if total is None:
+            total = np.zeros_like(a)
+        total += a
+    if total is None:
+        return np.sum(np.array([]), axis=0)
+    return total
 
 def getSpectrum(P,data,trace_coeffs,Aperture,RON,Gain,S,NCosmic, min_col,max_col):
     Result,size = Marsh.ObtainSpectrum( (data.flatten()).astype('double'), \

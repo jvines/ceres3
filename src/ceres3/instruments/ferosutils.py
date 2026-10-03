@@ -43,47 +43,68 @@ def get_RG(h):
         gain = 2.7
     return ron, gain
 
+_INT32 = np.iinfo(np.int32)
+
+def _calibrated_frame(path, bias=None):
+    """
+    One raw frame overscan-corrected, trimmed, bad-column repaired and, when a
+    master bias is given, bias-subtracted. Returns the float image and its header.
+    """
+    with pyfits.open(path) as hdul:
+        h = hdul[0]
+        d = b_col(OverscanTrim(h.data))
+        header = h.header
+    if bias is not None:
+        d -= bias
+    return d, header
+
+def _store_rounded(cube, i, frame):
+    """
+    Round a frame into slot i of an int32 cube, refusing values int32 cannot hold.
+
+    Bias-subtracted FEROS counts sit far inside int32, but a silent wrap would
+    corrupt the master frame with no error anywhere, so it is checked.
+    """
+    rounded = np.round(frame)
+    if rounded.min() < _INT32.min or rounded.max() > _INT32.max:
+        raise OverflowError("calibrated frame %d does not fit in int32: range [%g, %g]"
+                            % (i, rounded.min(), rounded.max()))
+    cube[i] = rounded
+
 def MedianCombine(ImgList, zero_bo=False, zero='MasterBias.fits'):
     """
     Median combine a list of images
+
+    The frames go into one pre-allocated int32 cube and the median is taken in
+    place. The previous version grew the stack with a looped np.dstack of int64
+    frames, which re-copied it on every frame and held two copies at the end: a
+    69-frame FEROS calibration set peaked at ~8.9 GB per job (EXOAUTOMAT-266).
+    The values are the same rounded integers as before, and the median of the
+    same integers is the same float64, so the master frames are unchanged.
     """
-    if zero_bo:
-        BIAS = pyfits.getdata(zero)
+    BIAS = pyfits.getdata(zero) if zero_bo else None
 
     n = len(ImgList)
     if n==0:
         raise ValueError("empty list provided!")
 
-    h = pyfits.open(ImgList[0])[0]
-    d = h.data
-    d = OverscanTrim(d)
-    d = b_col(d)
-    if zero_bo:
-        d -= BIAS
-    d = np.round(d).astype('int')
-
-    factor = 1.25
-    if (n < 3):
-        factor = 1
-
-    #ronoise = factor * h.header['HIERARCH ESO CORA CCD RON'] / np.sqrt(n)
-    #gain    = h.header['HIERARCH ESO CORA CCD GAIN']
-    ronoise, gain = get_RG(h.header)
+    d, header = _calibrated_frame(ImgList[0], BIAS)
+    ronoise, gain = get_RG(header)
     ronoise = ronoise/np.sqrt(n)
 
     if (n == 1):
-        return d, ronoise, gain
-    else:
-        for i in range(n-1):
-            #print(ImgList[i+1])
-            h = pyfits.open(ImgList[i+1])[0]
-            ot = OverscanTrim(h.data)
-            ot = b_col(ot)
-            if zero_bo:
-                d = np.dstack((d,np.round((ot - BIAS)).astype('int')))
-            else:
-                d = np.dstack((d,np.round(ot).astype('int')))
-        return np.median(d,axis=2), ronoise, gain
+        # a lone frame is returned as before, int64, so its product keeps its BITPIX
+        return np.round(d).astype('int'), ronoise, gain
+
+    cube = np.empty((n,) + d.shape, dtype=np.int32)
+    _store_rounded(cube, 0, d)
+    del d
+    for i in range(1, n):
+        frame, _ = _calibrated_frame(ImgList[i], BIAS)
+        _store_rounded(cube, i, frame)
+        del frame
+    # overwrite_input lets the partition reorder the cube instead of copying it
+    return np.median(cube, axis=0, overwrite_input=True), ronoise, gain
 
 def OverscanTrim(d):
     """

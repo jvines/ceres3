@@ -98,6 +98,7 @@ WAVSOL_CULL_FLOOR    = 300
 WAVSOL_MAX_CULL_FRAC = 0.5
 
 trace_degree       = 4
+TRACE_HALF_WIDTH   = 5    # get_them half-width (CERES's value; 6 drops weak traces)
 Marsh_alg          = 0
 ext_aperture       = 6
 NSigma_Marsh       = 10
@@ -205,13 +206,19 @@ else:
 def trace_orders(Flat, GA_flat, RO_flat, out_pkl):
     """Trace the (transposed) master flat and label the traces as orders 0..35 x ob/co.
 
-    get_them uses a MAD noise floor, so a weak comparison-fibre trace cannot inflate it
-    and hide real traces; label_traces then identifies every detected trace against the
-    packaged template instead of assuming the first two are order -1 and the rest
-    alternate ob/co. Raises ferosutils_fp.FerosTraceError if an order the pipeline
-    calibrates cannot be traced."""
+    The half-width is CERES's 5. The port had 6, which widens get_them's peak-finding
+    and background windows past the ob/co spacing (12-18 px). On the 44 archive master
+    flats where the red comparison fibres are weak, 6 found all 74 traces on none of
+    them (MAD floor included). 5 with the MAD floor finds all 74 on 40 and 72-73 on the
+    other 4; 5 with the sample-std floor manages 36, so the MAD floor stays. On the used
+    orders the positions agree with 6 to 0.007 px (median).
+
+    label_traces then identifies every detected trace against the packaged template
+    instead of assuming the first two are order -1 and the rest alternate ob/co, which
+    absorbs the 1-2 traces the remaining flats miss. Raises
+    ferosutils_fp.FerosTraceError if an order the pipeline calibrates cannot be traced."""
     print("\tTracing echelle orders...")
-    c_raw, nord_raw = GLOBALutils.get_them(Flat, 6, trace_degree, maxords=-1, mode=2, startfrom=40,
+    c_raw, nord_raw = GLOBALutils.get_them(Flat, TRACE_HALF_WIDTH, trace_degree, maxords=-1, mode=2, startfrom=40,
                                            endat=1900, nsigmas=nsigmas, robust_noise=True)
     c_all, trace_info = ferosutils_fp.label_traces(c_raw, Flat.shape[1], o0=o0, n_useful=n_useful)
     print(f"\t\t{nord_raw} traces found, {trace_info['matched']} of the 72 kept ones labelled, "

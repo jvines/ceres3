@@ -1878,12 +1878,14 @@ print("\n\tSarting with the post-processing:")
 #JustExtract = True
 if (not JustExtract):
     for fsim in comp_list:
+        # moon_corr.txt can still force the moon model for a frame; otherwise it is fitted
+        # only when the moon velocity falls near the stellar CCF (moon_contaminates below).
         know_moon = False
-        # if fsim.split('/')[-1] in spec_moon:
-        #     I = np.where(fsim.split('/')[-1] == spec_moon)[0]
-        ### JOSE HACK TO ALWAYS FIT 2 GAUSSIANS
-        know_moon = True
-        here_moon = True # use_moon[I]
+        here_moon = False
+        if fsim.split('/')[-1] in spec_moon:
+            I = np.where(fsim.split('/')[-1] == spec_moon)[0]
+            know_moon = True
+            here_moon = bool(use_moon[I][0])
         h        = pyfits.open(fsim)
         # obname   = h[0].header['OBJECT']
         obname = h[0].header.get('ESO OBS TARG NAME', h[0].header.get('OBJECT', 'Unknown'))
@@ -2038,8 +2040,9 @@ if (not JustExtract):
 
                 p1,XCmodel,p1gau,XCmodelgau,Ls2 = GLOBALutils.XC_Final_Fit( vels, xc_av , sigma_res = 4, horder=8, moonv = refvel, moons = moon_sig, moon = False)
                 moonmatters = False
+                moon_sep = ferosutils_fp.moon_separation(refvel, p1gau[1], p1gau[2])
 
-                if (know_moon and here_moon):
+                if (know_moon and here_moon) or ferosutils_fp.moon_contaminates(refvel, p1gau[1], p1gau[2]):
                     moonmatters = True
                     ismoon = True
                     confused = False
@@ -2194,6 +2197,9 @@ if (not JustExtract):
         # 'unknown' for every FEROS epoch it ingested. XC_MIN and RV mean nothing
         # without it: a G2 mask on an early-type star gives no dip at all.
         hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MASK', sp_type)
+        # Whether RV came from the two-Gaussian (moon) fit, and how close the moon was.
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON FIT', bool(moon_flag))
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON SEP', moon_sep, '[CCF sigma]')
         hdu[0] = GLOBALutils.update_header(hdu[0],'BJD_OUT', bjd_out)
 
         # Activity indicators + merged 1D rest-frame spectrum

@@ -149,6 +149,32 @@ def gauss(params, x):
 def res_gauss(params, g, x):
     return g-gauss(params, x)
 
+# Scattered moonlight adds a second dip at the moon's velocity. The two-Gaussian
+# fit models it, but only does good when that dip can actually overlap the star's:
+# fitting it everywhere pulls the stellar centre on frames the moon cannot touch
+# (by >10 m/s on 40% of archive frames, >1.5 km/s on 10%).
+MOON_NSIGMA = 3.0
+
+
+def moon_separation(moon_vel, rv, sigma):
+    """|moon velocity - stellar CCF centre| in units of the stellar CCF Gaussian sigma.
+
+    inf when the single-Gaussian fit gives no usable width or centre, so a failed
+    fit never triggers the moon model."""
+    try:
+        moon_vel, rv, sigma = float(moon_vel), float(rv), float(sigma)
+    except (TypeError, ValueError):
+        return float('inf')
+    if not (np.isfinite(moon_vel) and np.isfinite(rv) and np.isfinite(sigma)) or sigma <= 0:
+        return float('inf')
+    return abs(moon_vel - rv) / sigma
+
+
+def moon_contaminates(moon_vel, rv, sigma, nsigma=MOON_NSIGMA):
+    """True when the moon velocity lies within nsigma of the single-Gaussian CCF fit."""
+    return moon_separation(moon_vel, rv, sigma) < nsigma
+
+
 def hasFP(h):
     mjd,mjd0 = mjd_fromheader(h)
     if h[0].header['HIERARCH ESO DPR TYPE'] == 'WAVE' or h[0].header['HIERARCH ESO DPR TYPE'] == 'OBJECT,WAVE':

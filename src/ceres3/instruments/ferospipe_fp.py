@@ -18,6 +18,7 @@ baryc_dir = ''
 ephemeris = 'DEc403'
 
 from ceres3.instruments import ferosutils
+from ceres3 import targets as targets_mod
 from ceres3.instruments import ferosutils_fp
 from ceres3.utils import correlation
 from ceres3.utils import globalutils as GLOBALutils
@@ -51,7 +52,7 @@ parser.add_argument('-do_class', action="store_true", default=False)
 parser.add_argument('-just_extract', action="store_true", default=False)
 parser.add_argument('-npools', default=1)
 parser.add_argument('-o2do',default='all')
-parser.add_argument('-reffile',default='default')
+parser.add_argument('-targets', default=None, help='JSON file with per-target astrometry and CCF mask (see ceres3.targets).')
 parser.add_argument('-lamp',default='LAMP3')
 parser.add_argument('-ref_thar',default=None)
 parser.add_argument('-nsigmas', type=float, default=5.0, help='Sigma threshold for order detection (lower = more sensitive to faint lamps)')
@@ -65,7 +66,7 @@ DoClass          = args.do_class
 JustExtract      = args.just_extract
 npools           = int(args.npools)
 object2do        = args.o2do
-reffile          = args.reffile
+targets_path     = args.targets
 lamp             = str(args.lamp)
 ref_thar          = args.ref_thar
 nsigmas          = args.nsigmas
@@ -143,8 +144,9 @@ os.makedirs(dirout+'proc', exist_ok=True)
 
 f_res = open(os.path.join(dirout, 'proc', 'results.txt'), 'w')
 
-if reffile == 'default':
-    reffile = dirin+'reffile.txt'
+# Per-target astrometry and CCF mask (replaces CERES's reffile.txt). Targets absent from
+# it, or a run without it, keep the header coordinates and the G2 mask.
+targets = targets_mod.load_targets(targets_path)
 
 models_path = os.path.join(_pkg_dir, 'data', 'COELHO_MODELS', 'R_40000b/')
 order_dir   = os.path.join(_data_dir, 'feros_wavcals/')
@@ -1406,12 +1408,16 @@ for fsim in comp_list:
     ra          = h[0].header.get('RA', 0.0)
     dec         = h[0].header.get('DEC', 0.0)
 
-    ra2,dec2 = GLOBALutils.getcoords(obname,mjd,filen=reffile)
-    if ra2 !=0 and dec2 != 0:
-        ra = ra2
-        dec = dec2
+    # The target's catalogue position, moved to this exposure with its proper motion,
+    # parallax and RV; the header carries the pointing, with no proper motion applied.
+    coord_source = 'header'
+    _target = targets_mod.lookup(targets, obname)
+    if _target is not None and _target.has_position:
+        ra, dec = targets_mod.position_at(_target, mjd)
+        coord_source = 'targets'
     elif ra == 0.0 or dec == 0.0:
-        print(f'\t\tWARNING: No coordinates found in header or reference file for {obname}')
+        print(f'\t\tWARNING: No coordinates found in header or targets file for {obname}')
+    print(f"\t\tCoordinates from {coord_source}: {ra:.6f} {dec:.6f}")
 
     altitude    =  2335.
     latitude    = -29.2543
@@ -1506,6 +1512,7 @@ for fsim in comp_list:
         hdu = GLOBALutils.update_header(hdu,'HIERARCH RA',h[0].header.get('RA', ra))
         hdu = GLOBALutils.update_header(hdu,'HIERARCH DEC',h[0].header.get('DEC', dec))
         hdu = GLOBALutils.update_header(hdu,'HIERARCH RA BARY',ra)
+        hdu = GLOBALutils.update_header(hdu,'HIERARCH CERES COORD SOURCE',coord_source)
         hdu = GLOBALutils.update_header(hdu,'HIERARCH DEC BARY',dec)
         hdu = GLOBALutils.update_header(hdu,'HIERARCH EQUINOX',h[0].header.get('EQUINOX', 2000.0))
         hdu = GLOBALutils.update_header(hdu,'HIERARCH OBS LATITUDE',h[0].header.get('HIERARCH ESO TEL GEOLAT', -29.2543))
@@ -1551,6 +1558,7 @@ for fsim in comp_list:
         hdu = GLOBALutils.update_header(hdu,'HIERARCH RA',h[0].header.get('RA', ra))
         hdu = GLOBALutils.update_header(hdu,'HIERARCH DEC',h[0].header.get('DEC', dec))
         hdu = GLOBALutils.update_header(hdu,'HIERARCH RA BARY',ra)
+        hdu = GLOBALutils.update_header(hdu,'HIERARCH CERES COORD SOURCE',coord_source)
         hdu = GLOBALutils.update_header(hdu,'HIERARCH DEC BARY',dec)
         hdu = GLOBALutils.update_header(hdu,'HIERARCH EQUINOX',h[0].header.get('EQUINOX', 2000.0))
         hdu = GLOBALutils.update_header(hdu,'HIERARCH OBS LATITUDE',h[0].header.get('HIERARCH ESO TEL GEOLAT', -29.2543))
@@ -1968,7 +1976,12 @@ if (not JustExtract):
 
         print("\t\tRadial Velocity analysis:")
         # assign mask
-        sp_type, mask = GLOBALutils.get_mask_reffile(obname,reffile=reffile,base=_xc_masks_dir)
+        _target = targets_mod.lookup(targets, obname)
+        if _target is not None and _target.mask:
+            sp_type, mask_source = _target.mask, 'targets'
+        else:
+            sp_type, mask_source = 'G2', 'default'
+        mask = _xc_masks_dir + sp_type + '.mas'
         print(f"\t\t\tWill use {sp_type} mask for CCF.")
         velw  = 300
         velsh = 3.
@@ -1981,7 +1994,7 @@ if (not JustExtract):
         ml_v -= 1.5*(av_m - ml_v)
         mh_v += 1.5*(mh_v - av_m)
         mask_hw_kms = (GLOBALutils.Constants.c/1e3) * 0.5*(mh_v - ml_v) / av_m
-        disp = GLOBALutils.get_disp(obname, reffile=reffile)
+        disp = _target.ccf_width if (_target is not None and _target.ccf_width) else 0
         if disp == 0:
             known_sigma = False
             if vsini != -999 and vsini != 0.:
@@ -2187,6 +2200,7 @@ if (not JustExtract):
         hdu[0] = GLOBALutils.update_header(hdu[0],'INST', 'FEROS')
         hdu[0] = GLOBALutils.update_header(hdu[0],'RESOL', '50000')
         hdu[0] = GLOBALutils.update_header(hdu[0],'PIPELINE', 'CERES')
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MASK SOURCE', mask_source)
         hdu[0] = GLOBALutils.update_header(hdu[0],'XC_MIN', XC_min)
         # Which mask the CCF was correlated against. Until now this only existed
         # in the product filenames (``_XC_<sp_type>.pkl``, ``_XCs_<sp_type>.pdf``),

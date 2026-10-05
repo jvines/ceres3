@@ -23,6 +23,8 @@ def cmd_reduce(args):
         sys.argv.append('-do_class')
     if args.o2do != 'all':
         sys.argv.extend(['-o2do', args.o2do])
+    if getattr(args, 'targets', None):
+        sys.argv.extend(['-targets', args.targets])
 
     import importlib
     importlib.reload(pipeline)
@@ -137,6 +139,8 @@ def main():
     p_reduce.add_argument('--calib-dir', default=None)
     p_reduce.add_argument('--do-class', action='store_true')
     p_reduce.add_argument('--target', default='all', dest='o2do')
+    p_reduce.add_argument('--targets', default=None,
+                          help='JSON file with per-target astrometry and CCF mask (FEROS)')
 
     # ── activity ──────────────────────────────────────────────────────
     p_activity = subparsers.add_parser('activity',

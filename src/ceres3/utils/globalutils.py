@@ -3104,6 +3104,59 @@ def get_mask(sp_type_query,T_eff, query_success):
                         sp_type = 'K5'
         return sp_type
 
+def _np_short_sum(a, start, n):
+    """np.add.reduce of a[start:start+n] for 1 <= n <= 128 contiguous float64 values,
+    bit for bit: numpy's zero-initialised pairwise sum (8 accumulators from 8 on)."""
+    if n < 8:
+        res = 0.0
+        for i in range(n):
+            res += a[start + i]
+        return res
+    r0 = a[start]; r1 = a[start + 1]; r2 = a[start + 2]; r3 = a[start + 3]
+    r4 = a[start + 4]; r5 = a[start + 5]; r6 = a[start + 6]; r7 = a[start + 7]
+    i = 8
+    stop = n - (n % 8)
+    while i < stop:
+        r0 += a[start + i]; r1 += a[start + i + 1]; r2 += a[start + i + 2]; r3 += a[start + i + 3]
+        r4 += a[start + i + 4]; r5 += a[start + i + 5]; r6 += a[start + i + 6]; r7 += a[start + i + 7]
+        i += 8
+    res = ((r0 + r1) + (r2 + r3)) + ((r4 + r5) + (r6 + r7))
+    while i < n:
+        res += a[start + i]
+        i += 1
+    return res
+
+
+def _cont_window_stats(flx, span):
+    """np.sqrt(np.var(w)) and np.median(w) for every window w = flx[i:i+span], exactly
+    as numpy computes them for float64 (EXOAUTOMAT-304)."""
+    n = flx.shape[0]
+    dev = np.empty(n)
+    medf = np.empty(n)
+    sq = np.empty(span)
+    srt = np.empty(span)
+    for i in range(n):
+        m = span if n - i >= span else n - i
+        mean = _np_short_sum(flx, i, m) / m
+        for t in range(m):
+            d = flx[i + t] - mean
+            sq[t] = d * d
+        dev[i] = np.sqrt(_np_short_sum(sq, 0, m) / m)
+        for t in range(m):
+            srt[t] = flx[i + t]
+        s = np.sort(srt[:m])
+        if m % 2 == 1:
+            medf[i] = s[m // 2]
+        else:
+            medf[i] = (0.0 + s[m // 2 - 1] + s[m // 2]) / 2.0
+    return dev, medf
+
+
+if HAVE_NUMBA:
+    _np_short_sum = _njit(cache=True, fastmath=False)(_np_short_sum)
+    _cont_window_stats = _njit(cache=True, fastmath=False)(_cont_window_stats)
+
+
 def get_cont_single(W,F,E,nc=3,ll=3,lu=3,span=10,fact=3.,frac=0.3):
         I = np.where(F==0)[0]
         wav,flx,err = np.delete(W,I),np.delete(F,I),1./np.sqrt(np.delete(E,I))
@@ -3113,32 +3166,58 @@ def get_cont_single(W,F,E,nc=3,ll=3,lu=3,span=10,fact=3.,frac=0.3):
         i = 0
         rw,re,rd = [],[],[]
         good_w,good_f = [],[]
-        cond = True
-        while cond:
-                while i < len(wav):
-                        try:
-                                w,f,e = wav[i:int(i+span)],flx[i:int(i+span)],err[i:int(i+span)]
-                                dev = np.sqrt(np.var(f))
-                                rw.append(np.mean(w))
-                                re.append(np.median(e))
-                                rd.append(dev)
-                                if dev<fact*np.median(err) and np.median(f)>0.5*np.median(flx):
-                                        good_w.append(w[int(0.5*span)])
-                                        good_f.append(f[int(0.5*span)])
-                        except:
-                                None
-                        i+=1
+        # Both are medians of the whole order and never change below; they were
+        # recomputed at every pixel, ~1.5e5 medians of ~4000 values per FEROS frame
+        # (EXOAUTOMAT-304). Same values, computed once.
+        if len(wav) > 0:
+                med_err, med_flx = np.median(err), np.median(flx)
+        else:
+                med_err, med_flx = np.nan, np.nan
+        if flx.dtype.kind == "f" and flx.dtype.itemsize == 8 and int(span) == span and span >= 1:
+                # The window statistics do not depend on fact, so they are computed
+                # once (compiled when numba is there) and only the selection is redone
+                # as fact grows; the values are numpy's, bit for bit (EXOAUTOMAT-304).
+                span = int(span)
+                dev, medf = _cont_window_stats(np.ascontiguousarray(flx, dtype=np.float64), span)
+                mid = int(0.5*span)
+                has_mid = np.arange(len(wav)) + mid < len(wav)
+                cond = True
+                while cond:
+                        sel = np.nonzero((dev < fact*med_err) & (medf > 0.5*med_flx) & has_mid)[0] + mid
+                        if len(sel)>0.2*len(wav):
+                                cond = False
+                                good_w, good_f = list(wav[sel]), list(flx[sel])
+                        else:
+                                fact +=1
+                        if fact>20:
+                                return np.array([0,np.max(scipy.signal.medfilt(F,21))])
+        else:
+                cond = True
+                while cond:
+                        while i < len(wav):
+                                try:
+                                        w,f,e = wav[i:int(i+span)],flx[i:int(i+span)],err[i:int(i+span)]
+                                        dev = np.sqrt(np.var(f))
+                                        rw.append(np.mean(w))
+                                        re.append(np.median(e))
+                                        rd.append(dev)
+                                        if dev<fact*med_err and np.median(f)>0.5*med_flx:
+                                                good_w.append(w[int(0.5*span)])
+                                                good_f.append(f[int(0.5*span)])
+                                except:
+                                        None
+                                i+=1
 
-                #print len(good_w),0.1*len(wav),len(wav)
-                if len(good_w)>0.2*len(wav):
-                        cond = False
-                else:
-                        i = 0
-                        rw,re,rd = [],[],[]
-                        good_w,good_f = [],[]
-                        fact +=1
-                if fact>20:
-                        return np.array([0,np.max(scipy.signal.medfilt(F,21))])
+                        #print len(good_w),0.1*len(wav),len(wav)
+                        if len(good_w)>0.2*len(wav):
+                                cond = False
+                        else:
+                                i = 0
+                                rw,re,rd = [],[],[]
+                                good_w,good_f = [],[]
+                                fact +=1
+                        if fact>20:
+                                return np.array([0,np.max(scipy.signal.medfilt(F,21))])
 
         gw,gf = np.array(good_w),np.array(good_f)
 

@@ -722,97 +722,303 @@ def get_mask(sc,coefs,spa):
                         mask[traces[j,i]-spa:traces[j,i]+spa+1,i] = 1
         return mask
 
+try:
+    from numba import njit as _njit
+
+    HAVE_NUMBA = True
+except Exception:  # numba is an optional accelerator; see EXOAUTOMAT-287 below
+    HAVE_NUMBA = False
+
+
+def _py_bounds(start, stop, n):
+    """a[start:stop] bounds with Python's slice semantics (step 1)."""
+    if start < 0:
+        start = n + start
+        if start < 0:
+            start = 0
+    elif start > n:
+        start = n
+    if stop < 0:
+        stop = n + stop
+        if stop < 0:
+            stop = 0
+    elif stop > n:
+        stop = n
+    if stop < start:
+        stop = start
+    return start, stop
+
+
+def _np_median_buf(buf, m):
+    """np.median of buf[:m] (float64), bit for bit: NaN if any NaN, else the middle
+    value, or the zero-initialised sum of the two middle values over 2."""
+    for t in range(m):
+        if buf[t] != buf[t]:
+            return np.nan
+    srt = np.sort(buf[:m])
+    if m % 2 == 1:
+        return srt[m // 2]
+    return (0.0 + srt[m // 2 - 1] + srt[m // 2]) / 2.0
+
+
+def _np_median_range(a, b):
+    """np.median(np.arange(a, b)) for b > a."""
+    m = b - a
+    if m % 2 == 1:
+        return float(a + m // 2)
+    return (0.0 + float(a + m // 2 - 1) + float(a + m // 2)) / 2.0
+
+
+def _round_half_even(x):
+    r = np.floor(x + 0.5)
+    if r - x == 0.5 and r % 2.0 == 1.0:
+        r -= 1.0
+    return r
+
+
+def _scat_knots(sc, L, span, option, allow_neg, use_min):
+    """The (x, value) knots get_scat interpolates in each column, exactly as its
+    per-column Python loop builds them (EXOAUTOMAT-304)."""
+    nx = sc.shape[0]
+    ny = sc.shape[1]
+    ntr = L.shape[0]
+    KX = np.empty((ny, ntr + 1))
+    KY = np.empty((ny, ntr + 1))
+    KN = np.zeros(ny, np.int64)
+    buf = np.empty(nx + 1)
+    for y in range(ny):
+        k = 0
+        for j in range(ntr):
+            a = 0
+            b = 0
+            single = -1
+            if j == 0:
+                c0 = L[0, y]
+                if c0 - span < 0:
+                    pass
+                elif c0 - 2 * span < 0:
+                    a, b = _py_bounds(0, c0 - span, nx)
+                else:
+                    a, b = _py_bounds(c0 - 2 * span, c0 - span + 1, nx)
+            else:
+                p = L[j - 1, y]
+                c = L[j, y]
+                if p + span >= nx or p + span < 0:
+                    pass
+                elif c - span + 1 > nx:
+                    a, b = _py_bounds(p + span, nx, nx)
+                elif p + span >= c - span + 1:
+                    pass
+                else:
+                    a, b = _py_bounds(p + span, c - span + 1, nx)
+                if option == 1 and b - a == 0:
+                    tpos = int(_round_half_even(0.5 * (p + c)))
+                    if tpos >= 0 and tpos < nx:
+                        single = tpos
+            if single >= 0:
+                m = 1
+                buf[0] = sc[single, y]
+            else:
+                m = b - a
+                for t in range(m):
+                    buf[t] = sc[a + t, y]
+            if m > 0:
+                if use_min:
+                    value = buf[0]
+                    for t in range(1, m):
+                        if buf[t] < value or buf[t] != buf[t]:
+                            value = buf[t]
+                else:
+                    value = _np_median_buf(buf, m)
+                if value != value or (-value) != (-value):
+                    value = 0.0
+                if value < 0 and not allow_neg:
+                    value = 0.0
+                if single >= 0:
+                    mx = float(single)
+                else:
+                    mx = _np_median_range(a, b)
+                if k == 0:
+                    KX[y, k] = mx
+                    KY[y, k] = value
+                    k += 1
+                elif mx > KX[y, k - 1]:
+                    KX[y, k] = mx
+                    KY[y, k] = value
+                    k += 1
+                if j == 1 and k > 1:
+                    KY[y, 0] = KY[y, 1]
+        t0 = L[ntr - 1, y]
+        a = 0
+        b = 0
+        if t0 + span >= nx:
+            pass
+        elif t0 + 2 * span > nx:
+            a, b = _py_bounds(t0 + span, nx, nx)
+        else:
+            a, b = _py_bounds(t0 + span, t0 + 2 * span, nx)
+        m = b - a
+        if m > 0:
+            for t in range(m):
+                buf[t] = sc[a + t, y]
+            value = _np_median_buf(buf, m)
+            if value < 0 or value != value or (-value) != (-value):
+                value = 0.0
+            KX[y, k] = _np_median_range(a, b)
+            KY[y, k] = value
+            k += 1
+        KN[y] = k
+    return KX, KY, KN
+
+
+if HAVE_NUMBA:
+    _py_bounds = _njit(cache=True, fastmath=False)(_py_bounds)
+    _np_median_buf = _njit(cache=True, fastmath=False)(_np_median_buf)
+    _np_median_range = _njit(cache=True, fastmath=False)(_np_median_range)
+    _round_half_even = _njit(cache=True, fastmath=False)(_round_half_even)
+    _scat_knots = _njit(cache=True, fastmath=False)(_scat_knots)
+
+
+def _median_filter_strips(a, size, nthreads=None):
+    """scipy.signal.medfilt(a, size) for a 2-D float array, in row strips on threads.
+
+    signal.medfilt zero-pads; ndimage.median_filter with mode='constant', cval=0
+    takes the same medians, and it releases the GIL, so strips (each with the
+    kernel's half-height of neighbouring rows) run in parallel and stitch back to
+    the identical array (EXOAUTOMAT-304: 6.5 s -> 1.8 s per FEROS frame on 4 cores).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    import scipy.ndimage
+    if nthreads is None:
+        try:
+            nthreads = len(os.sched_getaffinity(0))
+        except AttributeError:
+            nthreads = os.cpu_count() or 1
+    nthreads = max(1, min(int(nthreads), 4, a.shape[0]))
+    halo = size[0] // 2
+    rows = a.shape[0]
+    edges = np.linspace(0, rows, nthreads + 1).astype(int)
+    out = np.empty(a.shape, dtype=np.result_type(a))
+
+    def one(k):
+        lo, hi = edges[k], edges[k + 1]
+        plo, phi = max(lo - halo, 0), min(hi + halo, rows)
+        r = scipy.ndimage.median_filter(a[plo:phi], size=size, mode='constant', cval=0.0)
+        out[lo:hi] = r[lo - plo:lo - plo + (hi - lo)]
+
+    if nthreads == 1:
+        one(0)
+    else:
+        with ThreadPoolExecutor(nthreads) as ex:
+            list(ex.map(one, range(nthreads)))
+    return out
+
+
 def get_scat(sc,lim,span = 7, typ='median', allow_neg=False,option=0):
         scat = np.zeros(sc.shape)
         ejeX = np.arange(sc.shape[0])
 
-        for y in range(sc.shape[1]):
-                lims = np.around(lim[:,y]).astype('int')
-                nejX,nejY = np.array([]),np.array([])
-                #plot(sc[:,y])
-                for j in range(len(lims)):
-                        if j == 0:
-                                #print lims[j] - span
-                                if lims[j] - span < 0:
-                                        ejx, ejy = [],[]
-                                elif lims[j] - 2 * span < 0:
-                                        ejx=ejeX[:lims[j]-span]
-                                        ejy=sc[:lims[j]-span,y]
-                                else:
-                                        ejx=ejeX[lims[j]- 2 * span:lims[j]-span+1]
-                                        ejy=sc[lims[j]- 2 * span:lims[j]-span+1,y]
-
-
-                        else:
-                                if lims[j-1] + span >= sc.shape[0] or lims[j-1] + span < 0:
-                                        ejx,ejy = [],[]
-
-                                elif lims[j] - span + 1 > sc.shape[0]:
-                                        ejx=ejeX[lims[j-1] + span: ]
-                                        ejy=sc[lims[j-1] + span:, y]
-                                elif lims[j-1] + span >= lims[j]- span + 1:
-                                        ejx,ejy = [],[]
-                                else:
-                                        ejx=ejeX[lims[j-1] + span:lims[j]- span + 1 ]
-                                        ejy=sc[lims[j-1] + span:lims[j]- span + 1, y]
-
-                                if option == 1 and len(ejx) == 0:
-                                        tpos = int(np.around(0.5*(lims[j-1] + lims[j])))
-                                        if tpos >= 0 and tpos < sc.shape[0]:
-                                                ejx = np.array([ejeX[tpos]])
-                                                ejy = np.array([sc[tpos,y]])
-
+        if (sc.ndim == 2 and sc.dtype.kind == 'f' and sc.dtype.itemsize == 8 and typ in ('median', 'min')
+                and int(span) == span):
+                # The knots of every column come from one compiled pass (numba when it
+                # is installed) that reproduces the loop below exactly; only the
+                # linear spline through them stays in scipy (EXOAUTOMAT-304).
+                L = np.around(lim).astype('int')
+                KX, KY, KN = _scat_knots(np.ascontiguousarray(sc, dtype=np.float64), np.ascontiguousarray(L),
+                                         int(span), int(option), bool(allow_neg), typ == 'min')
+                for y in range(sc.shape[1]):
+                        nejX, nejY = KX[y, :KN[y]], KY[y, :KN[y]]
+                        tck = interpolate.splrep(nejX,nejY,k=1)
+                        top = L[-1, y] + 2*span
+                        scat[:top,y] = interpolate.splev(ejeX,tck)[:top]
+        else:
+                for y in range(sc.shape[1]):
+                        lims = np.around(lim[:,y]).astype('int')
+                        nejX,nejY = np.array([]),np.array([])
                         #plot(sc[:,y])
-                        #plot(lims[j],sc[lims[j],y],'ro')
-                        #plot(ejx,ejy)
-                        #show()
-                        #print fd
+                        for j in range(len(lims)):
+                                if j == 0:
+                                        #print lims[j] - span
+                                        if lims[j] - span < 0:
+                                                ejx, ejy = [],[]
+                                        elif lims[j] - 2 * span < 0:
+                                                ejx=ejeX[:lims[j]-span]
+                                                ejy=sc[:lims[j]-span,y]
+                                        else:
+                                                ejx=ejeX[lims[j]- 2 * span:lims[j]-span+1]
+                                                ejy=sc[lims[j]- 2 * span:lims[j]-span+1,y]
 
-                        if len(ejy)>0:
-                                if typ== 'median':
-                                        value = np.median(ejy)
-                                elif typ == 'min':
-                                        value = np.min(ejy)
 
-                                if np.isnan(value)==True or np.isnan(-value)==True:
+                                else:
+                                        if lims[j-1] + span >= sc.shape[0] or lims[j-1] + span < 0:
+                                                ejx,ejy = [],[]
+
+                                        elif lims[j] - span + 1 > sc.shape[0]:
+                                                ejx=ejeX[lims[j-1] + span: ]
+                                                ejy=sc[lims[j-1] + span:, y]
+                                        elif lims[j-1] + span >= lims[j]- span + 1:
+                                                ejx,ejy = [],[]
+                                        else:
+                                                ejx=ejeX[lims[j-1] + span:lims[j]- span + 1 ]
+                                                ejy=sc[lims[j-1] + span:lims[j]- span + 1, y]
+
+                                        if option == 1 and len(ejx) == 0:
+                                                tpos = int(np.around(0.5*(lims[j-1] + lims[j])))
+                                                if tpos >= 0 and tpos < sc.shape[0]:
+                                                        ejx = np.array([ejeX[tpos]])
+                                                        ejy = np.array([sc[tpos,y]])
+
+                                #plot(sc[:,y])
+                                #plot(lims[j],sc[lims[j],y],'ro')
+                                #plot(ejx,ejy)
+                                #show()
+                                #print fd
+
+                                if len(ejy)>0:
+                                        if typ== 'median':
+                                                value = np.median(ejy)
+                                        elif typ == 'min':
+                                                value = np.min(ejy)
+
+                                        if np.isnan(value)==True or np.isnan(-value)==True:
+                                                value = 0.
+                                        if value < 0 and (not allow_neg):
+                                                value = 0.
+
+                                if len(ejx) > 0:
+                                        if len(nejX) == 0:
+                                                nejX = np.hstack((nejX,np.median(ejx)))
+                                                nejY = np.hstack((nejY,value))
+                                        elif np.median(ejx) > nejX[-1]:
+                                                nejX = np.hstack((nejX,np.median(ejx)))
+                                                nejY = np.hstack((nejY,value))
+                                        if j == 1 and len(nejY)>1:
+                                                nejY[0] = nejY[1]
+
+                        if lims[-1]+span >= sc.shape[0]:
+                                ejx,ejy = [],[]
+                        elif lims[-1]+2*span > sc.shape[0]:
+                                ejx,ejy = ejeX[lims[-1]+span:],sc[lims[-1]+span:,y]
+                        else:
+                                ejx=ejeX[lims[-1]+span:lims[-1]+2*span]
+                                ejy=sc[lims[-1]+span:lims[-1]+2*span,y]
+
+                        if len(ejx)>0:
+                                value = np.median(ejy)
+                                if value < 0 or np.isnan(value)==True or np.isnan(-value)==True:
                                         value = 0.
-                                if value < 0 and (not allow_neg):
-                                        value = 0.
+                                nejX = np.hstack((nejX,np.median(ejx)))
+                                nejY = np.hstack((nejY,value))
+                        tck = interpolate.splrep(nejX,nejY,k=1)
 
-                        if len(ejx) > 0:
-                                if len(nejX) == 0:
-                                        nejX = np.hstack((nejX,np.median(ejx)))
-                                        nejY = np.hstack((nejY,value))
-                                elif np.median(ejx) > nejX[-1]:
-                                        nejX = np.hstack((nejX,np.median(ejx)))
-                                        nejY = np.hstack((nejY,value))
-                                if j == 1 and len(nejY)>1:
-                                        nejY[0] = nejY[1]
-
-                if lims[-1]+span >= sc.shape[0]:
-                        ejx,ejy = [],[]
-                elif lims[-1]+2*span > sc.shape[0]:
-                        ejx,ejy = ejeX[lims[-1]+span:],sc[lims[-1]+span:,y]
-                else:
-                        ejx=ejeX[lims[-1]+span:lims[-1]+2*span]
-                        ejy=sc[lims[-1]+span:lims[-1]+2*span,y]
-
-                if len(ejx)>0:
-                        value = np.median(ejy)
-                        if value < 0 or np.isnan(value)==True or np.isnan(-value)==True:
-                                value = 0.
-                        nejX = np.hstack((nejX,np.median(ejx)))
-                        nejY = np.hstack((nejY,value))
-                tck = interpolate.splrep(nejX,nejY,k=1)
-
-                scat[:lims[-1]+2*span,y] = interpolate.splev(ejeX,tck)[:lims[-1]+2*span]
+                        scat[:lims[-1]+2*span,y] = interpolate.splev(ejeX,tck)[:lims[-1]+2*span]
 
         #plot(np.arange(sc.shape[0])[lim[:,1000].astype('int')],sc[lim[:,1000].astype('int'),1000],'ro')
         #plot(sc[:,1000])
         #plot(scat[:,1000])
         #show()
         #plot(scat[1000])
-        scat = scipy.signal.medfilt(scat,[5,15])
+        scat = _median_filter_strips(scat,(5,15))
         #plot(scat[1000])
         #show()
         return scat
@@ -1331,7 +1537,10 @@ def JPLR0(lat, altitude):
         GeoR = R0*np.cos(geolat) + altitude*np.cos(lat)
 
         # the R0 vector is now the distance from the observatory to the declination 0 deg plane
-        R0 = R0*np.sin(abs(geolat))+altitude*np.sin(lat)
+        # Signed: abs() put every southern observatory in the northern hemisphere (La Silla
+        # at z = +3097 km). BERV is unaffected (the rotation velocity has no z part); BJD
+        # moved by up to ~0.02 s and the topocentric Moon by ~1 deg.
+        R0 = R0*np.sin(geolat)+altitude*np.sin(lat)
         return GeoR,R0
 
 def JPLiers(path, mjdini, mjdend):
@@ -3104,6 +3313,59 @@ def get_mask(sp_type_query,T_eff, query_success):
                         sp_type = 'K5'
         return sp_type
 
+def _np_short_sum(a, start, n):
+    """np.add.reduce of a[start:start+n] for 1 <= n <= 128 contiguous float64 values,
+    bit for bit: numpy's zero-initialised pairwise sum (8 accumulators from 8 on)."""
+    if n < 8:
+        res = 0.0
+        for i in range(n):
+            res += a[start + i]
+        return res
+    r0 = a[start]; r1 = a[start + 1]; r2 = a[start + 2]; r3 = a[start + 3]
+    r4 = a[start + 4]; r5 = a[start + 5]; r6 = a[start + 6]; r7 = a[start + 7]
+    i = 8
+    stop = n - (n % 8)
+    while i < stop:
+        r0 += a[start + i]; r1 += a[start + i + 1]; r2 += a[start + i + 2]; r3 += a[start + i + 3]
+        r4 += a[start + i + 4]; r5 += a[start + i + 5]; r6 += a[start + i + 6]; r7 += a[start + i + 7]
+        i += 8
+    res = ((r0 + r1) + (r2 + r3)) + ((r4 + r5) + (r6 + r7))
+    while i < n:
+        res += a[start + i]
+        i += 1
+    return res
+
+
+def _cont_window_stats(flx, span):
+    """np.sqrt(np.var(w)) and np.median(w) for every window w = flx[i:i+span], exactly
+    as numpy computes them for float64 (EXOAUTOMAT-304)."""
+    n = flx.shape[0]
+    dev = np.empty(n)
+    medf = np.empty(n)
+    sq = np.empty(span)
+    srt = np.empty(span)
+    for i in range(n):
+        m = span if n - i >= span else n - i
+        mean = _np_short_sum(flx, i, m) / m
+        for t in range(m):
+            d = flx[i + t] - mean
+            sq[t] = d * d
+        dev[i] = np.sqrt(_np_short_sum(sq, 0, m) / m)
+        for t in range(m):
+            srt[t] = flx[i + t]
+        s = np.sort(srt[:m])
+        if m % 2 == 1:
+            medf[i] = s[m // 2]
+        else:
+            medf[i] = (0.0 + s[m // 2 - 1] + s[m // 2]) / 2.0
+    return dev, medf
+
+
+if HAVE_NUMBA:
+    _np_short_sum = _njit(cache=True, fastmath=False)(_np_short_sum)
+    _cont_window_stats = _njit(cache=True, fastmath=False)(_cont_window_stats)
+
+
 def get_cont_single(W,F,E,nc=3,ll=3,lu=3,span=10,fact=3.,frac=0.3):
         I = np.where(F==0)[0]
         wav,flx,err = np.delete(W,I),np.delete(F,I),1./np.sqrt(np.delete(E,I))
@@ -3113,32 +3375,58 @@ def get_cont_single(W,F,E,nc=3,ll=3,lu=3,span=10,fact=3.,frac=0.3):
         i = 0
         rw,re,rd = [],[],[]
         good_w,good_f = [],[]
-        cond = True
-        while cond:
-                while i < len(wav):
-                        try:
-                                w,f,e = wav[i:int(i+span)],flx[i:int(i+span)],err[i:int(i+span)]
-                                dev = np.sqrt(np.var(f))
-                                rw.append(np.mean(w))
-                                re.append(np.median(e))
-                                rd.append(dev)
-                                if dev<fact*np.median(err) and np.median(f)>0.5*np.median(flx):
-                                        good_w.append(w[int(0.5*span)])
-                                        good_f.append(f[int(0.5*span)])
-                        except:
-                                None
-                        i+=1
+        # Both are medians of the whole order and never change below; they were
+        # recomputed at every pixel, ~1.5e5 medians of ~4000 values per FEROS frame
+        # (EXOAUTOMAT-304). Same values, computed once.
+        if len(wav) > 0:
+                med_err, med_flx = np.median(err), np.median(flx)
+        else:
+                med_err, med_flx = np.nan, np.nan
+        if flx.dtype.kind == "f" and flx.dtype.itemsize == 8 and int(span) == span and span >= 1:
+                # The window statistics do not depend on fact, so they are computed
+                # once (compiled when numba is there) and only the selection is redone
+                # as fact grows; the values are numpy's, bit for bit (EXOAUTOMAT-304).
+                span = int(span)
+                dev, medf = _cont_window_stats(np.ascontiguousarray(flx, dtype=np.float64), span)
+                mid = int(0.5*span)
+                has_mid = np.arange(len(wav)) + mid < len(wav)
+                cond = True
+                while cond:
+                        sel = np.nonzero((dev < fact*med_err) & (medf > 0.5*med_flx) & has_mid)[0] + mid
+                        if len(sel)>0.2*len(wav):
+                                cond = False
+                                good_w, good_f = list(wav[sel]), list(flx[sel])
+                        else:
+                                fact +=1
+                        if fact>20:
+                                return np.array([0,np.max(scipy.signal.medfilt(F,21))])
+        else:
+                cond = True
+                while cond:
+                        while i < len(wav):
+                                try:
+                                        w,f,e = wav[i:int(i+span)],flx[i:int(i+span)],err[i:int(i+span)]
+                                        dev = np.sqrt(np.var(f))
+                                        rw.append(np.mean(w))
+                                        re.append(np.median(e))
+                                        rd.append(dev)
+                                        if dev<fact*med_err and np.median(f)>0.5*med_flx:
+                                                good_w.append(w[int(0.5*span)])
+                                                good_f.append(f[int(0.5*span)])
+                                except:
+                                        None
+                                i+=1
 
-                #print len(good_w),0.1*len(wav),len(wav)
-                if len(good_w)>0.2*len(wav):
-                        cond = False
-                else:
-                        i = 0
-                        rw,re,rd = [],[],[]
-                        good_w,good_f = [],[]
-                        fact +=1
-                if fact>20:
-                        return np.array([0,np.max(scipy.signal.medfilt(F,21))])
+                        #print len(good_w),0.1*len(wav),len(wav)
+                        if len(good_w)>0.2*len(wav):
+                                cond = False
+                        else:
+                                i = 0
+                                rw,re,rd = [],[],[]
+                                good_w,good_f = [],[]
+                                fact +=1
+                        if fact>20:
+                                return np.array([0,np.max(scipy.signal.medfilt(F,21))])
 
         gw,gf = np.array(good_w),np.array(good_f)
 

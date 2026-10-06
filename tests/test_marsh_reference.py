@@ -6,9 +6,13 @@ loop, and the profile fit's normal equations summed over overlapping pixels only
 None of that may change a single bit. The reference was produced by the 1.3.1
 extension on this synthetic order: a curved trace, a flat, and a science frame
 with 60 cosmic rays, extracted with no, a 10-sigma and a 50-sigma rejection.
+
+x86_64 and aarch64 builds have always differed slightly (up to 5e-5 relative, fused
+multiply-adds on ARM), so each architecture is held to its own 1.3.1 reference.
 """
 from __future__ import annotations
 
+import platform
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +20,9 @@ import pytest
 
 from ceres3.ext import Marsh
 
-REF = Path(__file__).resolve().parent / "data" / "marsh_reference_1.3.1.npz"
+DATA = Path(__file__).resolve().parent / "data"
+REFS = {"x86_64": DATA / "marsh_reference_1.3.1.npz", "amd64": DATA / "marsh_reference_1.3.1.npz",
+        "aarch64": DATA / "marsh_reference_1.3.1_aarch64.npz", "arm64": DATA / "marsh_reference_1.3.1_aarch64.npz"}
 
 
 def inputs():
@@ -50,7 +56,10 @@ def run():
 
 @pytest.fixture(scope="module")
 def ref():
-    return np.load(REF)
+    machine = platform.machine().lower()
+    if machine not in REFS:
+        pytest.skip(f"no 1.3.1 Marsh reference for {machine}")
+    return np.load(REFS[machine])
 
 
 @pytest.mark.parametrize("key", ["P", "spec_cosmic0", "spec_cosmic10", "spec_cosmic50"])

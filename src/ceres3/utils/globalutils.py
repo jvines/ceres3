@@ -722,97 +722,303 @@ def get_mask(sc,coefs,spa):
                         mask[traces[j,i]-spa:traces[j,i]+spa+1,i] = 1
         return mask
 
+try:
+    from numba import njit as _njit
+
+    HAVE_NUMBA = True
+except Exception:  # numba is an optional accelerator; see EXOAUTOMAT-287 below
+    HAVE_NUMBA = False
+
+
+def _py_bounds(start, stop, n):
+    """a[start:stop] bounds with Python's slice semantics (step 1)."""
+    if start < 0:
+        start = n + start
+        if start < 0:
+            start = 0
+    elif start > n:
+        start = n
+    if stop < 0:
+        stop = n + stop
+        if stop < 0:
+            stop = 0
+    elif stop > n:
+        stop = n
+    if stop < start:
+        stop = start
+    return start, stop
+
+
+def _np_median_buf(buf, m):
+    """np.median of buf[:m] (float64), bit for bit: NaN if any NaN, else the middle
+    value, or the zero-initialised sum of the two middle values over 2."""
+    for t in range(m):
+        if buf[t] != buf[t]:
+            return np.nan
+    srt = np.sort(buf[:m])
+    if m % 2 == 1:
+        return srt[m // 2]
+    return (0.0 + srt[m // 2 - 1] + srt[m // 2]) / 2.0
+
+
+def _np_median_range(a, b):
+    """np.median(np.arange(a, b)) for b > a."""
+    m = b - a
+    if m % 2 == 1:
+        return float(a + m // 2)
+    return (0.0 + float(a + m // 2 - 1) + float(a + m // 2)) / 2.0
+
+
+def _round_half_even(x):
+    r = np.floor(x + 0.5)
+    if r - x == 0.5 and r % 2.0 == 1.0:
+        r -= 1.0
+    return r
+
+
+def _scat_knots(sc, L, span, option, allow_neg, use_min):
+    """The (x, value) knots get_scat interpolates in each column, exactly as its
+    per-column Python loop builds them (EXOAUTOMAT-304)."""
+    nx = sc.shape[0]
+    ny = sc.shape[1]
+    ntr = L.shape[0]
+    KX = np.empty((ny, ntr + 1))
+    KY = np.empty((ny, ntr + 1))
+    KN = np.zeros(ny, np.int64)
+    buf = np.empty(nx + 1)
+    for y in range(ny):
+        k = 0
+        for j in range(ntr):
+            a = 0
+            b = 0
+            single = -1
+            if j == 0:
+                c0 = L[0, y]
+                if c0 - span < 0:
+                    pass
+                elif c0 - 2 * span < 0:
+                    a, b = _py_bounds(0, c0 - span, nx)
+                else:
+                    a, b = _py_bounds(c0 - 2 * span, c0 - span + 1, nx)
+            else:
+                p = L[j - 1, y]
+                c = L[j, y]
+                if p + span >= nx or p + span < 0:
+                    pass
+                elif c - span + 1 > nx:
+                    a, b = _py_bounds(p + span, nx, nx)
+                elif p + span >= c - span + 1:
+                    pass
+                else:
+                    a, b = _py_bounds(p + span, c - span + 1, nx)
+                if option == 1 and b - a == 0:
+                    tpos = int(_round_half_even(0.5 * (p + c)))
+                    if tpos >= 0 and tpos < nx:
+                        single = tpos
+            if single >= 0:
+                m = 1
+                buf[0] = sc[single, y]
+            else:
+                m = b - a
+                for t in range(m):
+                    buf[t] = sc[a + t, y]
+            if m > 0:
+                if use_min:
+                    value = buf[0]
+                    for t in range(1, m):
+                        if buf[t] < value or buf[t] != buf[t]:
+                            value = buf[t]
+                else:
+                    value = _np_median_buf(buf, m)
+                if value != value or (-value) != (-value):
+                    value = 0.0
+                if value < 0 and not allow_neg:
+                    value = 0.0
+                if single >= 0:
+                    mx = float(single)
+                else:
+                    mx = _np_median_range(a, b)
+                if k == 0:
+                    KX[y, k] = mx
+                    KY[y, k] = value
+                    k += 1
+                elif mx > KX[y, k - 1]:
+                    KX[y, k] = mx
+                    KY[y, k] = value
+                    k += 1
+                if j == 1 and k > 1:
+                    KY[y, 0] = KY[y, 1]
+        t0 = L[ntr - 1, y]
+        a = 0
+        b = 0
+        if t0 + span >= nx:
+            pass
+        elif t0 + 2 * span > nx:
+            a, b = _py_bounds(t0 + span, nx, nx)
+        else:
+            a, b = _py_bounds(t0 + span, t0 + 2 * span, nx)
+        m = b - a
+        if m > 0:
+            for t in range(m):
+                buf[t] = sc[a + t, y]
+            value = _np_median_buf(buf, m)
+            if value < 0 or value != value or (-value) != (-value):
+                value = 0.0
+            KX[y, k] = _np_median_range(a, b)
+            KY[y, k] = value
+            k += 1
+        KN[y] = k
+    return KX, KY, KN
+
+
+if HAVE_NUMBA:
+    _py_bounds = _njit(cache=True, fastmath=False)(_py_bounds)
+    _np_median_buf = _njit(cache=True, fastmath=False)(_np_median_buf)
+    _np_median_range = _njit(cache=True, fastmath=False)(_np_median_range)
+    _round_half_even = _njit(cache=True, fastmath=False)(_round_half_even)
+    _scat_knots = _njit(cache=True, fastmath=False)(_scat_knots)
+
+
+def _median_filter_strips(a, size, nthreads=None):
+    """scipy.signal.medfilt(a, size) for a 2-D float array, in row strips on threads.
+
+    signal.medfilt zero-pads; ndimage.median_filter with mode='constant', cval=0
+    takes the same medians, and it releases the GIL, so strips (each with the
+    kernel's half-height of neighbouring rows) run in parallel and stitch back to
+    the identical array (EXOAUTOMAT-304: 6.5 s -> 1.8 s per FEROS frame on 4 cores).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    import scipy.ndimage
+    if nthreads is None:
+        try:
+            nthreads = len(os.sched_getaffinity(0))
+        except AttributeError:
+            nthreads = os.cpu_count() or 1
+    nthreads = max(1, min(int(nthreads), 4, a.shape[0]))
+    halo = size[0] // 2
+    rows = a.shape[0]
+    edges = np.linspace(0, rows, nthreads + 1).astype(int)
+    out = np.empty(a.shape, dtype=np.result_type(a))
+
+    def one(k):
+        lo, hi = edges[k], edges[k + 1]
+        plo, phi = max(lo - halo, 0), min(hi + halo, rows)
+        r = scipy.ndimage.median_filter(a[plo:phi], size=size, mode='constant', cval=0.0)
+        out[lo:hi] = r[lo - plo:lo - plo + (hi - lo)]
+
+    if nthreads == 1:
+        one(0)
+    else:
+        with ThreadPoolExecutor(nthreads) as ex:
+            list(ex.map(one, range(nthreads)))
+    return out
+
+
 def get_scat(sc,lim,span = 7, typ='median', allow_neg=False,option=0):
         scat = np.zeros(sc.shape)
         ejeX = np.arange(sc.shape[0])
 
-        for y in range(sc.shape[1]):
-                lims = np.around(lim[:,y]).astype('int')
-                nejX,nejY = np.array([]),np.array([])
-                #plot(sc[:,y])
-                for j in range(len(lims)):
-                        if j == 0:
-                                #print lims[j] - span
-                                if lims[j] - span < 0:
-                                        ejx, ejy = [],[]
-                                elif lims[j] - 2 * span < 0:
-                                        ejx=ejeX[:lims[j]-span]
-                                        ejy=sc[:lims[j]-span,y]
-                                else:
-                                        ejx=ejeX[lims[j]- 2 * span:lims[j]-span+1]
-                                        ejy=sc[lims[j]- 2 * span:lims[j]-span+1,y]
-
-
-                        else:
-                                if lims[j-1] + span >= sc.shape[0] or lims[j-1] + span < 0:
-                                        ejx,ejy = [],[]
-
-                                elif lims[j] - span + 1 > sc.shape[0]:
-                                        ejx=ejeX[lims[j-1] + span: ]
-                                        ejy=sc[lims[j-1] + span:, y]
-                                elif lims[j-1] + span >= lims[j]- span + 1:
-                                        ejx,ejy = [],[]
-                                else:
-                                        ejx=ejeX[lims[j-1] + span:lims[j]- span + 1 ]
-                                        ejy=sc[lims[j-1] + span:lims[j]- span + 1, y]
-
-                                if option == 1 and len(ejx) == 0:
-                                        tpos = int(np.around(0.5*(lims[j-1] + lims[j])))
-                                        if tpos >= 0 and tpos < sc.shape[0]:
-                                                ejx = np.array([ejeX[tpos]])
-                                                ejy = np.array([sc[tpos,y]])
-
+        if (sc.ndim == 2 and sc.dtype.kind == 'f' and sc.dtype.itemsize == 8 and typ in ('median', 'min')
+                and int(span) == span):
+                # The knots of every column come from one compiled pass (numba when it
+                # is installed) that reproduces the loop below exactly; only the
+                # linear spline through them stays in scipy (EXOAUTOMAT-304).
+                L = np.around(lim).astype('int')
+                KX, KY, KN = _scat_knots(np.ascontiguousarray(sc, dtype=np.float64), np.ascontiguousarray(L),
+                                         int(span), int(option), bool(allow_neg), typ == 'min')
+                for y in range(sc.shape[1]):
+                        nejX, nejY = KX[y, :KN[y]], KY[y, :KN[y]]
+                        tck = interpolate.splrep(nejX,nejY,k=1)
+                        top = L[-1, y] + 2*span
+                        scat[:top,y] = interpolate.splev(ejeX,tck)[:top]
+        else:
+                for y in range(sc.shape[1]):
+                        lims = np.around(lim[:,y]).astype('int')
+                        nejX,nejY = np.array([]),np.array([])
                         #plot(sc[:,y])
-                        #plot(lims[j],sc[lims[j],y],'ro')
-                        #plot(ejx,ejy)
-                        #show()
-                        #print fd
+                        for j in range(len(lims)):
+                                if j == 0:
+                                        #print lims[j] - span
+                                        if lims[j] - span < 0:
+                                                ejx, ejy = [],[]
+                                        elif lims[j] - 2 * span < 0:
+                                                ejx=ejeX[:lims[j]-span]
+                                                ejy=sc[:lims[j]-span,y]
+                                        else:
+                                                ejx=ejeX[lims[j]- 2 * span:lims[j]-span+1]
+                                                ejy=sc[lims[j]- 2 * span:lims[j]-span+1,y]
 
-                        if len(ejy)>0:
-                                if typ== 'median':
-                                        value = np.median(ejy)
-                                elif typ == 'min':
-                                        value = np.min(ejy)
 
-                                if np.isnan(value)==True or np.isnan(-value)==True:
+                                else:
+                                        if lims[j-1] + span >= sc.shape[0] or lims[j-1] + span < 0:
+                                                ejx,ejy = [],[]
+
+                                        elif lims[j] - span + 1 > sc.shape[0]:
+                                                ejx=ejeX[lims[j-1] + span: ]
+                                                ejy=sc[lims[j-1] + span:, y]
+                                        elif lims[j-1] + span >= lims[j]- span + 1:
+                                                ejx,ejy = [],[]
+                                        else:
+                                                ejx=ejeX[lims[j-1] + span:lims[j]- span + 1 ]
+                                                ejy=sc[lims[j-1] + span:lims[j]- span + 1, y]
+
+                                        if option == 1 and len(ejx) == 0:
+                                                tpos = int(np.around(0.5*(lims[j-1] + lims[j])))
+                                                if tpos >= 0 and tpos < sc.shape[0]:
+                                                        ejx = np.array([ejeX[tpos]])
+                                                        ejy = np.array([sc[tpos,y]])
+
+                                #plot(sc[:,y])
+                                #plot(lims[j],sc[lims[j],y],'ro')
+                                #plot(ejx,ejy)
+                                #show()
+                                #print fd
+
+                                if len(ejy)>0:
+                                        if typ== 'median':
+                                                value = np.median(ejy)
+                                        elif typ == 'min':
+                                                value = np.min(ejy)
+
+                                        if np.isnan(value)==True or np.isnan(-value)==True:
+                                                value = 0.
+                                        if value < 0 and (not allow_neg):
+                                                value = 0.
+
+                                if len(ejx) > 0:
+                                        if len(nejX) == 0:
+                                                nejX = np.hstack((nejX,np.median(ejx)))
+                                                nejY = np.hstack((nejY,value))
+                                        elif np.median(ejx) > nejX[-1]:
+                                                nejX = np.hstack((nejX,np.median(ejx)))
+                                                nejY = np.hstack((nejY,value))
+                                        if j == 1 and len(nejY)>1:
+                                                nejY[0] = nejY[1]
+
+                        if lims[-1]+span >= sc.shape[0]:
+                                ejx,ejy = [],[]
+                        elif lims[-1]+2*span > sc.shape[0]:
+                                ejx,ejy = ejeX[lims[-1]+span:],sc[lims[-1]+span:,y]
+                        else:
+                                ejx=ejeX[lims[-1]+span:lims[-1]+2*span]
+                                ejy=sc[lims[-1]+span:lims[-1]+2*span,y]
+
+                        if len(ejx)>0:
+                                value = np.median(ejy)
+                                if value < 0 or np.isnan(value)==True or np.isnan(-value)==True:
                                         value = 0.
-                                if value < 0 and (not allow_neg):
-                                        value = 0.
+                                nejX = np.hstack((nejX,np.median(ejx)))
+                                nejY = np.hstack((nejY,value))
+                        tck = interpolate.splrep(nejX,nejY,k=1)
 
-                        if len(ejx) > 0:
-                                if len(nejX) == 0:
-                                        nejX = np.hstack((nejX,np.median(ejx)))
-                                        nejY = np.hstack((nejY,value))
-                                elif np.median(ejx) > nejX[-1]:
-                                        nejX = np.hstack((nejX,np.median(ejx)))
-                                        nejY = np.hstack((nejY,value))
-                                if j == 1 and len(nejY)>1:
-                                        nejY[0] = nejY[1]
-
-                if lims[-1]+span >= sc.shape[0]:
-                        ejx,ejy = [],[]
-                elif lims[-1]+2*span > sc.shape[0]:
-                        ejx,ejy = ejeX[lims[-1]+span:],sc[lims[-1]+span:,y]
-                else:
-                        ejx=ejeX[lims[-1]+span:lims[-1]+2*span]
-                        ejy=sc[lims[-1]+span:lims[-1]+2*span,y]
-
-                if len(ejx)>0:
-                        value = np.median(ejy)
-                        if value < 0 or np.isnan(value)==True or np.isnan(-value)==True:
-                                value = 0.
-                        nejX = np.hstack((nejX,np.median(ejx)))
-                        nejY = np.hstack((nejY,value))
-                tck = interpolate.splrep(nejX,nejY,k=1)
-
-                scat[:lims[-1]+2*span,y] = interpolate.splev(ejeX,tck)[:lims[-1]+2*span]
+                        scat[:lims[-1]+2*span,y] = interpolate.splev(ejeX,tck)[:lims[-1]+2*span]
 
         #plot(np.arange(sc.shape[0])[lim[:,1000].astype('int')],sc[lim[:,1000].astype('int'),1000],'ro')
         #plot(sc[:,1000])
         #plot(scat[:,1000])
         #show()
         #plot(scat[1000])
-        scat = scipy.signal.medfilt(scat,[5,15])
+        scat = _median_filter_strips(scat,(5,15))
         #plot(scat[1000])
         #show()
         return scat

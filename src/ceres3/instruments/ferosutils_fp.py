@@ -12,6 +12,7 @@ import os
 import matplotlib.pyplot as plt
 import sys
 from ceres3.utils import globalutils as GLOBALutils
+from ceres3.utils import moonlight
 
 
 import statsmodels.api as sm
@@ -150,10 +151,36 @@ def res_gauss(params, g, x):
     return g-gauss(params, x)
 
 # Scattered moonlight adds a second dip at the moon's velocity. The two-Gaussian
-# fit models it, but only does good when that dip can actually overlap the star's:
-# fitting it everywhere pulls the stellar centre on frames the moon cannot touch
-# (by >10 m/s on 40% of archive frames, >1.5 km/s on 10%).
-MOON_NSIGMA = 3.0
+# fit (moon mean fixed at the moon velocity, depth >= 0, width free) recovers the
+# stellar RV only when that dip is deep enough to measure and resolved from the
+# star's; otherwise it fits the star's own departure from a Gaussian (a shallow
+# moon) or trades moon depth for stellar centre (an unresolved one), and does worse
+# than the single Gaussian. EXOAUTOMAT-301: injection on real archive CCFs, and
+# bright-moon RVs against the same targets' dark-time epochs.
+#
+# 1. Predict the moonlight: Krisciunas & Schaefer sky brightness at the target,
+#    against the star's own count rate. Fit nothing unless the predicted bias of the
+#    single-Gaussian RV exceeds MOON_GATE_FRAC of its error (or moon_corr.txt says so).
+# 2. Fit the two Gaussians, and keep them only if the moon is resolved
+#    (>= MOON_SEP_MIN single-Gaussian sigmas), its depth is within MOON_DEPTH_CONSIST
+#    of the prediction and its width is that of sunlight through the mask.
+# 3. Otherwise report the single Gaussian, and flag the RV when its predicted bias
+#    exceeds MOON_FLAG_FRAC of its error: that moonlight is there and cannot be removed.
+FEROS_SITE = (-70.7346, -29.2543, 2335.0)    # longitude, latitude [deg], height [m]
+MOON_FIBRE_AREA = np.pi        # arcsec^2: the 2" FEROS object fibre
+MOON_ZP_FULL = 12.2            # V mag giving 1 ADU/s/px at 5500 A with the whole source in the
+                               # fibre; standards give 11.75 at typical coupling (11.9 at best)
+MOON_K_V = 0.12                # V extinction at La Silla, mag/airmass
+MOON_CCF_DEPTH = 0.35          # CCF depth of sunlight under the mask, per unit moonlight
+MOON_PRED_SCALE = 1.8          # measured/predicted moon dip, calibrated on 1,380 bright-moon archive
+                               # frames against their targets' dark-time epochs
+MOON_SIGMA = 4.0               # km/s: width of sunlight's CCF (tau Ceti's is 3.8)
+MOON_GATE_FRAC = 1.0 / 3.0
+MOON_SEP_MIN = 1.7             # measured on the single Gaussian, which the moon drags and widens:
+                               # about 2 sigma of the star's own CCF
+MOON_DEPTH_CONSIST = 3.0
+MOON_SIGMA_RANGE = (2.0, 8.0)  # km/s
+MOON_FLAG_FRAC = 1.0
 
 
 def moon_separation(moon_vel, rv, sigma):
@@ -170,9 +197,97 @@ def moon_separation(moon_vel, rv, sigma):
     return abs(moon_vel - rv) / sigma
 
 
-def moon_contaminates(moon_vel, rv, sigma, nsigma=MOON_NSIGMA):
-    """True when the moon velocity lies within nsigma of the single-Gaussian CCF fit."""
-    return moon_separation(moon_vel, rv, sigma) < nsigma
+def star_count_rate(spec, texp, wave=5500.0):
+    """Median extracted object counts per second and pixel in the order nearest `wave`."""
+    try:
+        texp = float(texp)
+    except (TypeError, ValueError):
+        return float('nan')
+    if not texp > 0:
+        return float('nan')
+    w = spec[0]
+    n = w.shape[1]
+    o = int(np.argmin(np.abs(w[:, n // 2] - wave)))
+    return float(np.median(spec[1, o, n // 4: 3 * n // 4])) / texp
+
+
+def ccf_rv_error(sp_type, p1gau, snr):
+    """The RV error CERES assigns from the CCF width, depth and SNR, in km/s."""
+    if sp_type == 'G2':
+        A, B = 0.11081, 0.0016
+    else:
+        A, B = 0.08900, 0.00311
+    rverr = B + (1.6 + 0.2 * p1gau[2]) * A / np.round(snr)
+    depth_fact = 1. + p1gau[0] / (p1gau[2] * np.sqrt(2 * np.pi))
+    if depth_fact < 0.6:
+        depth_fact = 0.6
+    if depth_fact >= 1.:
+        rverr2 = -999.000
+    else:
+        rverr2 = rverr * (1 - 0.6) / (1 - depth_fact)
+    if rverr2 <= 0.002:
+        rverr2 = 0.002
+    return rverr2
+
+
+def predict_moon(mjd, ra, dec, star_rate, vels, p1gau, moon_vel, site=FEROS_SITE):
+    """Predicted moonlight for a frame and the bias it would put on the single-Gaussian RV.
+
+    Returns sky_mag (V mag/arcsec^2, inf with the Moon down), ratio (moonlight /
+    starlight in the fibre), depth (the moon dip in CCF units) and bias (km/s).
+    Never raises: a frame whose prediction cannot be made gets no moon treatment.
+    """
+    out = {'sky_mag': float('inf'), 'ratio': 0.0, 'depth': 0.0, 'bias': 0.0, 'moon_alt': float('nan')}
+    try:
+        geo = moonlight.moon_geometry(mjd, ra, dec, *site)
+        out['moon_alt'] = geo['moon_alt']
+        sky = moonlight.ks_sky_brightness(geo['phase_angle'], geo['separation'],
+                                          90.0 - geo['moon_alt'], 90.0 - geo['target_alt'], k=MOON_K_V)
+        out['sky_mag'] = sky
+        ratio = moonlight.moonlight_ratio(sky, star_rate, MOON_ZP_FULL, MOON_FIBRE_AREA)
+        if not np.isfinite(ratio):
+            return out
+        out['ratio'] = ratio
+        out['depth'] = ratio / (1.0 + ratio) * MOON_CCF_DEPTH * MOON_PRED_SCALE
+        star_depth = -p1gau[0] / (p1gau[2] * np.sqrt(2 * np.pi))
+        out['bias'] = moonlight.predicted_bias(vels, star_depth, p1gau[1], p1gau[2],
+                                               out['depth'], moon_vel, MOON_SIGMA, sigma_res=4.0)
+    except Exception as exc:
+        print(f'\t\t\tWARNING: no moonlight prediction for this frame ({exc})')
+    return out
+
+
+def moon_can_bias(bias, rv_err):
+    """True when the predicted moon bias is large enough to try the two-Gaussian fit."""
+    return bool(rv_err > 0 and abs(bias) > MOON_GATE_FRAC * rv_err)
+
+
+def moon_flags_rv(bias, rv_err):
+    """True when uncorrected moonlight would bias the RV by more than its error."""
+    return bool(rv_err > 0 and abs(bias) > MOON_FLAG_FRAC * rv_err)
+
+
+def moon_component(p1gau_m):
+    """Depth (CCF units) and width (km/s) of the moon dip from a moon_bounded XC_Final_Fit."""
+    if len(p1gau_m) < 5:
+        return 0.0, 0.0
+    return float(-p1gau_m[0] * p1gau_m[3]), float(p1gau_m[4])
+
+
+def accept_moon_fit(p1gau, p1gau_m, moon_vel, depth_pred):
+    """Keep the two-Gaussian fit? Returns (accepted, reason it was not)."""
+    sep = moon_separation(moon_vel, p1gau[1], p1gau[2])
+    if not sep >= MOON_SEP_MIN:
+        return False, f'moon unresolved ({sep:.1f} sigma)'
+    if not depth_pred > 0:
+        return False, 'no moonlight predicted'
+    depth, width = moon_component(p1gau_m)
+    q = depth / depth_pred
+    if not (1.0 / MOON_DEPTH_CONSIST <= q <= MOON_DEPTH_CONSIST):
+        return False, f'moon depth {q:.2f}x the prediction'
+    if not (MOON_SIGMA_RANGE[0] <= width <= MOON_SIGMA_RANGE[1]):
+        return False, f'moon width {width:.1f} km/s'
+    return True, ''
 
 
 def hasFP(h):

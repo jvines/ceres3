@@ -1893,8 +1893,8 @@ print("\n\tSarting with the post-processing:")
 #JustExtract = True
 if (not JustExtract):
     for fsim in comp_list:
-        # moon_corr.txt can still force the moon model for a frame; otherwise it is fitted
-        # only when the moon velocity falls near the stellar CCF (moon_contaminates below).
+        # moon_corr.txt can still force the moon model for a frame; otherwise the
+        # moonlight rule in ferosutils_fp decides (EXOAUTOMAT-301).
         know_moon = False
         here_moon = False
         if fsim.split('/')[-1] in spec_moon:
@@ -1928,6 +1928,12 @@ if (not JustExtract):
         SNR_5130 = np.median(spec[8,10,1900:2101] )
         if SNR_5130 < 1.:
             SNR_5130 = 1.
+
+        # What the moonlight prediction needs: the star's own count rate (no catalogue
+        # magnitude) and the position the barycentric correction used.
+        star_rate = ferosutils_fp.star_count_rate(spec, h[0].header.get('EXPTIME', 0.0))
+        moon_ra = hdu[0].header.get('HIERARCH RA BARY', h[0].header.get('RA', 0.0))
+        moon_dec = hdu[0].header.get('HIERARCH DEC BARY', h[0].header.get('DEC', 0.0))
 
         if DoClass:
             # spectral analysis
@@ -2050,29 +2056,30 @@ if (not JustExtract):
                 pred = scipy.interpolate.splev(vels,tck1)
                 xc_av /= pred
 
-                if sp_type == 'M5':
-                    moon_sig = 2.5
-                elif sp_type == 'K5':
-                    moon_sig = 3.3
-                else:
-                    moon_sig = 4.5
-                    moon_sig = 0.6*np.sqrt(1.**2+disp**2)
-
-                p1,XCmodel,p1gau,XCmodelgau,Ls2 = GLOBALutils.XC_Final_Fit( vels, xc_av , sigma_res = 4, horder=8, moonv = refvel, moons = moon_sig, moon = False)
-                moonmatters = False
+                p1,XCmodel,p1gau,XCmodelgau,Ls2 = GLOBALutils.XC_Final_Fit( vels, xc_av , sigma_res = 4, horder=8, moonv = refvel, moons = ferosutils_fp.MOON_SIGMA, moon = False)
                 moon_sep = ferosutils_fp.moon_separation(refvel, p1gau[1], p1gau[2])
 
-                if (know_moon and here_moon) or ferosutils_fp.moon_contaminates(refvel, p1gau[1], p1gau[2]):
-                    moonmatters = True
-                    ismoon = True
-                    confused = False
-                    p1_m,XCmodel_m,p1gau_m,XCmodelgau_m,Ls2_m = GLOBALutils.XC_Final_Fit( vels, xc_av , sigma_res = 4, horder=8, moonv = refvel, moons = moon_sig, moon = True)
-                    moon_flag = 1
-                else:
-                    confused = False
-                    ismoon = False
-                    p1_m,XCmodel_m,p1gau_m,XCmodelgau_m,Ls2_m = p1,XCmodel,p1gau,XCmodelgau,Ls2
-                    moon_flag = 0
+                # Moonlight (EXOAUTOMAT-301): predict it, try the two-Gaussian fit only when
+                # it can bias this RV, and keep the fit only when it measured the moon.
+                moon_pred = ferosutils_fp.predict_moon(mjd, moon_ra, moon_dec, star_rate, vels, p1gau, refvel)
+                moon_forced = know_moon and here_moon
+                moon_tried = moon_forced or ferosutils_fp.moon_can_bias(
+                    moon_pred['bias'], ferosutils_fp.ccf_rv_error(sp_type, p1gau, SNR_5130))
+                moon_depth_fit, moon_sigma_fit, moon_reject = 0.0, 0.0, 'not tried'
+                p1_m,XCmodel_m,p1gau_m,XCmodelgau_m,Ls2_m = p1,XCmodel,p1gau,XCmodelgau,Ls2
+                moon_flag = 0
+                if moon_tried:
+                    fit_m = GLOBALutils.XC_Final_Fit( vels, xc_av , sigma_res = 4, horder=8, moonv = refvel, moons = ferosutils_fp.MOON_SIGMA, moon = True,
+                                                      moon_bounded = True, moon_depth0 = moon_pred['depth'])
+                    moon_depth_fit, moon_sigma_fit = ferosutils_fp.moon_component(fit_m[2])
+                    if moon_forced:
+                        keep_moon, moon_reject = True, ''
+                    else:
+                        keep_moon, moon_reject = ferosutils_fp.accept_moon_fit(p1gau, fit_m[2], refvel, moon_pred['depth'])
+                    if keep_moon:
+                        p1_m,XCmodel_m,p1gau_m,XCmodelgau_m,Ls2_m = fit_m
+                        moon_flag = 1
+                moonmatters = bool(moon_flag)
 
                 bspan = GLOBALutils.calc_bss(vels,xc_av)
                 SP = bspan[0]
@@ -2080,9 +2087,14 @@ if (not JustExtract):
 
                 #print p1gau[1]
                 if (not known_sigma):
-                    disp = np.floor(p1gau[2])
+                    disp = np.floor(p1gau[2]) if np.isfinite(p1gau[2]) else 3.0
                     if (disp < 3.0):
                         disp = 3.0
+                    # The next pass sizes its CCF grid from this width (6 disp). A
+                    # diverged single Gaussian (TIC399868187 on 2021-10-16: ~1e12 km/s)
+                    # asked for a 3.4 PiB grid and killed every RV left in the night.
+                    # The fine CCF is never wider than the rough search that found the star.
+                    disp = min(disp, velw / 6.0)
                     mask_hw_wide = av_m * disp / (GLOBALutils.Constants.c/1.0e3)
                     ml_v = av_m - mask_hw_wide
                     mh_v = av_m + mask_hw_wide
@@ -2140,19 +2152,7 @@ if (not JustExtract):
         RVerr =  B + ( 1.6 + 0.2 * p1gau[2] ) * A / np.round(SNR_5130)
         BSerr = D / float(np.round(SNR_5130)) + C
 
-        RVerr =  B + (1.6+0.2*p1gau[2])*A/np.round(SNR_5130)
-        depth_fact = 1. + p1gau[0]/(p1gau[2]*np.sqrt(2*np.pi))
-        if depth_fact < 0.6:
-            depth_fact = 0.6
-
-        if depth_fact >= 1.:
-            RVerr2 = -999.000
-        else:
-            depth_fact = (1 - 0.6) / (1 - depth_fact)
-            RVerr2 = RVerr * depth_fact
-
-        if (RVerr2 <= 0.002):
-            RVerr2 = 0.002
+        RVerr2 = ferosutils_fp.ccf_rv_error(sp_type, p1gau, SNR_5130)
 
         # The reported RV is the centre of an unconstrained least-squares fit to
         # the averaged CCF, while the CCF itself was only sampled over vels
@@ -2174,6 +2174,18 @@ if (not JustExtract):
                 f"velocities the CCF was computed over ({vels.min():.0f}..{vels.max():.0f} km/s), so its "
                 f"RV is not a measurement of this star (SNR {SNR_5130:.0f}, dispersion {p1gau_m[2]:.1f} km/s); "
                 "flagged GOOD QUALITY RV = F")
+            print(f'WARNING: {_pipeline_warnings[-1]}')
+
+        # Moonlight the two-Gaussian fit could not remove: the single-Gaussian RV is
+        # still biased by it, by more than its own error.
+        moon_unremoved = bool(moon_tried and not moon_flag and ferosutils_fp.moon_flags_rv(moon_pred['bias'], RVerr2))
+        rv_good = rv_in_grid and not moon_unremoved
+        if rv_in_grid and moon_unremoved:
+            rv_flag_reason = (f"moonlight: predicted bias {moon_pred['bias']*1000:+.0f} m/s, {moon_reject}")[:60]
+            _pipeline_warnings.append(
+                f"{fsim.split('/')[-1]}: scattered moonlight is predicted to bias this RV by "
+                f"{moon_pred['bias']*1000:+.0f} m/s (error {RVerr2*1000:.0f} m/s) and the two-Gaussian fit "
+                f"could not remove it ({moon_reject}); flagged GOOD QUALITY RV = F")
             print(f'WARNING: {_pipeline_warnings[-1]}')
 
         RV     = np.around(p1gau_m[1],4)
@@ -2198,7 +2210,7 @@ if (not JustExtract):
         # write to output
         disp_epoch = np.around(p1gau_m[2],1)
         hdu[0] = GLOBALutils.update_header(hdu[0],'RV', RV)
-        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH GOOD QUALITY RV', rv_in_grid)
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH GOOD QUALITY RV', rv_good)
         hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH RV FLAG REASON', rv_flag_reason)
         hdu[0] = GLOBALutils.update_header(hdu[0],'RV_E', RVerr2)
         hdu[0] = GLOBALutils.update_header(hdu[0],'BS', BS)
@@ -2221,6 +2233,15 @@ if (not JustExtract):
         # Whether RV came from the two-Gaussian (moon) fit, and how close the moon was.
         hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON FIT', bool(moon_flag))
         hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON SEP', moon_sep, '[CCF sigma]')
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON SKY',
+                                           float(moon_pred['sky_mag']) if np.isfinite(moon_pred['sky_mag']) else 99.0,
+                                           '[V mag/arcsec2] 99 = Moon down')
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON RATIO', float(moon_pred['ratio']), 'moonlight/starlight, predicted')
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON BIAS', float(moon_pred['bias'])*1000, '[m/s] predicted on 1G RV')
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON DEPTH PRED', float(moon_pred['depth']), 'moon CCF dip, predicted')
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON DEPTH FIT', moon_depth_fit, 'moon CCF dip, fitted')
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON SIGMA FIT', moon_sigma_fit, '[km/s]')
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH CERES MOON REJECT', moon_reject or 'none')
         hdu[0] = GLOBALutils.update_header(hdu[0],'BJD_OUT', bjd_out)
 
         # Activity indicators + merged 1D rest-frame spectrum

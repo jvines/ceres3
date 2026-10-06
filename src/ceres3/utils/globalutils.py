@@ -1663,11 +1663,19 @@ def XC_Herm_Fit(X,Y,back_lag=5, usemin=True, horder=20, sigma_res = 2, horder_re
     return p1, predicted, p1_s, predicted_s, p1_gau, predicted_gau, L1, L2
     #return p1, predicted, p1_gau, predicted_gau, L2
 
-def XC_Final_Fit( X, Y, usemin=True, sigma_res = 1.5, horder=20, moonv = 0., moons = 1., moon = False):
+def XC_Final_Fit( X, Y, usemin=True, sigma_res = 1.5, horder=20, moonv = 0., moons = 1., moon = False,
+                  moon_bounded = False, moon_depth0 = None):
     """
     Fits a Gaussian and Gauss-Hermite series
     Higher order in the expansion is horder
 
+    With moon=True a second Gaussian, centred on the moon velocity moonv, models
+    scattered moonlight. By default its amplitude is unconstrained and its width
+    fixed at moons, as in CERES. moon_bounded=True fits it as moonlight can only
+    be: an absorption dip (never emission), with its width free, starting from
+    moons and from moon_depth0 (its expected depth in CCF units) when given. The
+    returned p1_gau then has five entries: the star's three, the moon's amplitude
+    (moon depth = -p1_gau[0] * p1_gau[3]) and its width.
     """
     f0 = 0.1
     vel0 = X[len(X)//2]
@@ -1763,7 +1771,28 @@ def XC_Final_Fit( X, Y, usemin=True, sigma_res = 1.5, horder=20, moonv = 0., moo
     sigma = p1_gau0[2]
     L2 = np.where( np.abs(X - mean) <= sigma_res * sigma)
 
-    if moon:
+    if moon and moon_bounded:
+            if moon_depth0 and p1_gau0[0] != 0:
+                f_start = moon_depth0 / abs(p1_gau0[0])
+            else:
+                f_start = f0
+            # The star's amplitude keeps its sign (an absorption CCF has p[0] < 0), and
+            # the moon term p[0]*f is an absorption dip only for f >= 0.
+            lo = [-np.inf if usemin else 0.0, -np.inf, 1e-3, 0.0, 1.0]
+            hi = [0.0 if usemin else np.inf, np.inf, np.inf, np.inf, 15.0]
+            x0 = np.clip(np.append(p1_gau0[:3], [max(f_start, 1e-6), moons]), lo, hi)
+            if usemin and x0[0] == 0.0:
+                x0[0] = -1e-3
+            if (len(L2[0]) >= len(x0)):
+                XL, YL = X[L2], Y[L2]
+                def res_moon(p):
+                    return p[0] * CorGaussian2(XL, p[1], p[2], moonv, p[4], p[3]) + 1.0 - YL
+                p1_gau = scipy.optimize.least_squares(res_moon, x0, bounds=(lo, hi)).x
+                predicted_gau = p1_gau[0] * CorGaussian2(XL, p1_gau[1], p1_gau[2], moonv, p1_gau[4], p1_gau[3]) + 1.0
+            else:
+                p1_gau = np.zeros(5)
+                predicted_gau = np.zeros( len(X[L2]) )
+    elif moon:
             p1_gau0 = np.append(p1_gau0, f0)
             if (len(L2[0]) >= n + 1):
                 norms, herms = get_herms(horder)

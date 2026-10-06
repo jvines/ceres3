@@ -47,7 +47,10 @@ def test_the_check_runs_before_rv_is_rounded_into_the_product(src):
 
 
 def test_both_cards_are_written(src):
-    assert "'HIERARCH GOOD QUALITY RV', rv_in_grid" in src
+    # The card also carries the moonlight flag (EXOAUTOMAT-301); an out-of-grid
+    # centre still clears it.
+    assert "'HIERARCH GOOD QUALITY RV', rv_good" in src
+    assert "rv_good = rv_in_grid and" in src
     assert "'HIERARCH RV FLAG REASON', rv_flag_reason" in src
 
 

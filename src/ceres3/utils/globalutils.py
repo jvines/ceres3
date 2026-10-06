@@ -1537,7 +1537,10 @@ def JPLR0(lat, altitude):
         GeoR = R0*np.cos(geolat) + altitude*np.cos(lat)
 
         # the R0 vector is now the distance from the observatory to the declination 0 deg plane
-        R0 = R0*np.sin(abs(geolat))+altitude*np.sin(lat)
+        # Signed: abs() put every southern observatory in the northern hemisphere (La Silla
+        # at z = +3097 km). BERV is unaffected (the rotation velocity has no z part); BJD
+        # moved by up to ~0.02 s and the topocentric Moon by ~1 deg.
+        R0 = R0*np.sin(geolat)+altitude*np.sin(lat)
         return GeoR,R0
 
 def JPLiers(path, mjdini, mjdend):

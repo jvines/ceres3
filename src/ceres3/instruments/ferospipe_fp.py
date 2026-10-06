@@ -2087,9 +2087,14 @@ if (not JustExtract):
 
                 #print p1gau[1]
                 if (not known_sigma):
-                    disp = np.floor(p1gau[2])
+                    disp = np.floor(p1gau[2]) if np.isfinite(p1gau[2]) else 3.0
                     if (disp < 3.0):
                         disp = 3.0
+                    # The next pass sizes its CCF grid from this width (6 disp). A
+                    # diverged single Gaussian (TIC399868187 on 2021-10-16: ~1e12 km/s)
+                    # asked for a 3.4 PiB grid and killed every RV left in the night.
+                    # The fine CCF is never wider than the rough search that found the star.
+                    disp = min(disp, velw / 6.0)
                     mask_hw_wide = av_m * disp / (GLOBALutils.Constants.c/1.0e3)
                     ml_v = av_m - mask_hw_wide
                     mh_v = av_m + mask_hw_wide

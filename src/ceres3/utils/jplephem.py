@@ -119,7 +119,12 @@ def pulse_delay(ra_hours, dec_deg, mjd_int, mjd_frac, n_steps=1, step_size=0.0):
 
 
 def object_track(name, mjd_int, mjd_frac, n_steps=1, step_size=0.0):
-    """Get the apparent RA/Dec of a solar system object.
+    """Get the topocentric RA/Dec of a solar system object, on J2000 (GCRS) axes.
+
+    This is what SSEphem returns: the body as seen from the observer set by
+    set_observer_coordinates. It must not be transformed to ICRS, which moves
+    the origin to the solar-system barycentre; seen from there the Moon sits
+    roughly opposite the Sun (EXOAUTOMAT-300).
 
     Parameters
     ----------
@@ -143,9 +148,8 @@ def object_track(name, mjd_int, mjd_frac, n_steps=1, step_size=0.0):
     for i in range(n_steps):
         t = _make_time(mjd_int, mjd_frac + i * step_size)
         body = get_body(name.lower(), t, location=_observer_location)
-        body_icrs = body.transform_to(ICRS())
-        ras.append(body_icrs.ra.hour)
-        decs.append(body_icrs.dec.deg)
+        ras.append(body.ra.hour)
+        decs.append(body.dec.deg)
 
     return {'ra': ras, 'dec': decs}
 
@@ -168,19 +172,21 @@ def barycentric_object_track(name, mjd_int, mjd_frac, n_steps=1, step_size=0.0):
 
     Returns
     -------
-    dict with keys 'x', 'y', 'z' (AU), 'x_rate', 'y_rate', 'z_rate' (AU/day).
+    dict with keys 'x', 'y', 'z' (km), 'x_rate', 'y_rate', 'z_rate' (km/s),
+    the units SSEphem returns and get_lunar_props expects: its Sun-Moon
+    radial velocity is in km/s and is added to object_doppler's.
     """
     xs, ys, zs = [], [], []
     xrs, yrs, zrs = [], [], []
     for i in range(n_steps):
         t = _make_time(mjd_int, mjd_frac + i * step_size)
         pos, vel = get_body_barycentric_posvel(name.lower(), t)
-        xs.append(pos.x.to(u.AU).value)
-        ys.append(pos.y.to(u.AU).value)
-        zs.append(pos.z.to(u.AU).value)
-        xrs.append(vel.x.to(u.AU / u.day).value)
-        yrs.append(vel.y.to(u.AU / u.day).value)
-        zrs.append(vel.z.to(u.AU / u.day).value)
+        xs.append(pos.x.to(u.km).value)
+        ys.append(pos.y.to(u.km).value)
+        zs.append(pos.z.to(u.km).value)
+        xrs.append(vel.x.to(u.km / u.s).value)
+        yrs.append(vel.y.to(u.km / u.s).value)
+        zrs.append(vel.z.to(u.km / u.s).value)
 
     return {
         'x': xs, 'y': ys, 'z': zs,
@@ -189,7 +195,14 @@ def barycentric_object_track(name, mjd_int, mjd_frac, n_steps=1, step_size=0.0):
 
 
 def object_doppler(name, mjd_int, mjd_frac, n_steps=1, step_size=0.0):
-    """Compute the Doppler fraction for a solar system object.
+    """Compute the Doppler fraction of a solar system object as seen by the observer.
+
+    The fraction is v/c, where v is the rate of change of the observer-object
+    distance (positive when receding), from the barycentric states of the object
+    and of the observer (Earth plus the site set by set_observer_coordinates).
+    This is SSEphem's quantity. A barycentric correction towards the object is
+    not: it ignores the object's own motion, and the Moon moves with the Earth
+    (EXOAUTOMAT-300).
 
     Parameters
     ----------
@@ -208,30 +221,29 @@ def object_doppler(name, mjd_int, mjd_frac, n_steps=1, step_size=0.0):
     -------
     dict with key 'frac': list of Doppler fractions.
     """
+    c_kms = const.c.to(u.km / u.s).value
     fracs = []
     for i in range(n_steps):
         t = _make_time(mjd_int, mjd_frac + i * step_size)
-
-        # Get body position/velocity relative to observer
-        body = get_body(name.lower(), t, location=_observer_location)
-        body_icrs = body.transform_to(ICRS())
-
-        # Compute the radial velocity correction towards the object
-        vcorr = body_icrs.radial_velocity_correction(
-            obstime=t, location=_observer_location, kind='barycentric'
-        )
-        frac = (vcorr / const.c).decompose().value
-        fracs.append(frac)
+        body_pos, body_vel = get_body_barycentric_posvel(name.lower(), t)
+        obs_pos, obs_vel = get_body_barycentric_posvel('earth', t)
+        if _observer_location is not None:
+            site_pos, site_vel = _observer_location.get_gcrs_posvel(t)
+            obs_pos, obs_vel = obs_pos + site_pos, obs_vel + site_vel
+        d = (body_pos - obs_pos).xyz.to(u.km).value
+        dv = (body_vel - obs_vel).xyz.to(u.km / u.s).value
+        fracs.append(float(np.dot(d, dv) / np.linalg.norm(d) / c_kms))
 
     return {'frac': fracs}
-
 
 def observer_position_velocity(mjd_int, mjd_frac, n_steps=1, step_size=0.0):
     """Get the observer's barycentric position and velocity.
 
     Returns
     -------
-    dict with keys 'x', 'y', 'z' (AU), 'x_rate', 'y_rate', 'z_rate' (AU/day).
+    dict with keys 'x', 'y', 'z' (km), 'x_rate', 'y_rate', 'z_rate' (km/s),
+    the units SSEphem returns and get_lunar_props expects: its Sun-Moon
+    radial velocity is in km/s and is added to object_doppler's.
     """
     xs, ys, zs = [], [], []
     xrs, yrs, zrs = [], [], []

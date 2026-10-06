@@ -77,6 +77,47 @@ int BCosmicRayRejection(double** A,double** B,double** V,double** P,double* F,do
 *----------------------------------------------------------------------
 */
 
+/*
+ * An array indexed [column][row] that holds only the rows r0..r1 (EXOAUTOMAT-304).
+ * Extraction reads, per column, only the rows inside that column's aperture, so
+ * an order needs its own band of the detector, not all of it: allocating and
+ * transposing full-detector copies for every order cost more than the extraction.
+ * a[j][i] is valid for r0 <= i <= r1, with the same indices as a full array.
+ */
+static double** MakeBandArray(int cols,int r0,int r1){
+int j;
+long h=(long)(r1-r0+1);
+double* block=(double*) calloc((size_t)cols*(size_t)h,sizeof(double));
+double** a=(double**) malloc((size_t)(cols+1)*sizeof(double*));
+a[0]=block;
+for(j=0;j<cols;j++)
+   a[j+1]=block+(long)j*h-r0;
+return a+1;
+}
+
+static void FreeBandArray(double** a){
+if(a!=NULL){
+   free(a[-1]);
+   free(a-1);
+}
+}
+
+/* The rows any column's aperture can touch: the ints the extraction loops use. */
+static void ApertureBand(double* pmin,double* pmax,int len_cols,int len_rows,int* r0,int* r1){
+int j,lo,hi;
+*r0=len_rows-1;
+*r1=0;
+for(j=0;j<len_cols;j++){
+   lo=pmin[j];
+   hi=pmax[j];
+   if(lo<*r0) *r0=lo;
+   if(hi>*r1) *r1=hi;
+}
+if(*r0<0) *r0=0;
+if(*r1>len_rows-1) *r1=len_rows-1;
+if(*r1<*r0) *r1=*r0;
+}
+
 static PyObject *Marsh_ObtainP(PyObject *self, PyObject *args){
         struct timeval tim;
         gettimeofday(&tim, NULL);
@@ -409,32 +450,26 @@ static PyObject *Marsh_ObtainSpectrum(PyObject *self, PyObject *args){
           len_cols=Range[1]-Range[0]+1;
         }
 
-        double** M = MakeArray(len_rows,len_cols);        /* Create a matrix array for our image (FREED on getSpectrum) */
-        double** P = MakeArray(len_rows,len_cols);        /* Create a matrix array for our P's (FREED on getSpectrum)   */
-        double** DummyM = MakeArray(len_rows,len_cols);
-	if(Range[0]==-1){
-          for(i=0;i<len_rows;i++){                        /* If the column doesn't present problems, proceed as usual   */
-                for(j=0;j<len_cols;j++){ 
-	            M[i][j]=mflat[i*real_cols+j]-dvalue;
-    	            DummyM[i][j]=mflat[i*real_cols+j]-dvalue;
-	            P[i][j]=pflat[i*real_cols+j];
-                }
-          }
-        }
-        else{
-          for(i=0;i<len_rows;i++){                        /* If it does, we fill our cutted image                       */
-                for(j=range;j<Range[1]+1;j++){ 
-	            M[i][j-range]=mflat[i*real_cols+j]-dvalue;
-		    DummyM[i][j-range]=mflat[i*real_cols+j]-dvalue;
-	            P[i][j-range]=pflat[i*real_cols+j];
-                }
-          }
-        }
-
         pmin=MakeVector(len_cols);
         pmax=MakeVector(len_cols);
         getMinMax(pmin,pmax,v,C,S,K,len_v,len_cols,range);
-        double** Spectrum=getSpectrum(Transpose(M,len_rows,len_cols),Transpose(DummyM,len_rows,len_cols),Transpose(P,len_rows,len_cols),v,len_v,pmin,pmax,RON,GAIN,len_rows,len_cols,CosmicSigma,debug,isvarimage); // FREED (here, later)
+        /* The image and the light fractions, transposed to [column][row], for the
+           order's band of rows only; column j of the (possibly cut) order is column
+           j (or j+range) of the image. No variance image: isvarimage is 0. */
+        int b0,b1,src;
+        ApertureBand(pmin,pmax,len_cols,len_rows,&b0,&b1);
+        double** MT = MakeBandArray(len_cols,b0,b1);       /* FREED here, after getSpectrum */
+        double** PT = MakeBandArray(len_cols,b0,b1);       /* FREED here, after getSpectrum */
+        for(j=0;j<len_cols;j++){
+              src=(Range[0]==-1) ? j : j+range;
+              for(i=b0;i<=b1;i++){
+                  MT[j][i]=mflat[i*real_cols+src]-dvalue;
+                  PT[j][i]=pflat[i*real_cols+src];
+              }
+        }
+        double** Spectrum=getSpectrum(MT,NULL,PT,v,len_v,pmin,pmax,RON,GAIN,len_rows,len_cols,CosmicSigma,debug,isvarimage); // FREED (here, later)
+        FreeBandArray(MT);
+        FreeBandArray(PT);
         gettimeofday(&tim, NULL);
         double t2=tim.tv_sec+(tim.tv_usec/1000000.0);
         if(debug!=0){
@@ -879,7 +914,13 @@ static PyObject *Marsh_SObtainSpectrum(PyObject *self, PyObject *args){
         pmin=MakeVector(len_cols);
         pmax=MakeVector(len_cols);
         getMinMax(pmin,pmax,v,C,S,K,len_v,len_cols,range);
-        double** Spectrum=getSpectrum(Transpose(M,len_rows,len_cols),Transpose(Var,len_rows,len_cols),Transpose(P,len_rows,len_cols),v,len_v,pmin,pmax,RON,GAIN,len_rows,len_cols,CosmicSigma,debug,isvarimage); // FREED (here, later)
+        double** MT = Transpose(M,len_rows,len_cols);
+        double** VarT = Transpose(Var,len_rows,len_cols);
+        double** PT = Transpose(P,len_rows,len_cols);
+        double** Spectrum=getSpectrum(MT,VarT,PT,v,len_v,pmin,pmax,RON,GAIN,len_rows,len_cols,CosmicSigma,debug,isvarimage); // FREED (here, later)
+        FreeArray(MT,len_cols);
+        FreeArray(VarT,len_cols);
+        FreeArray(PT,len_cols);
         gettimeofday(&tim, NULL);
         double t2=tim.tv_sec+(tim.tv_usec/1000000.0);
         if(debug!=0){
@@ -1817,6 +1858,159 @@ int OutlierRejection(double** A,double** V,double** P,double** E,double** VarE,d
  * ---------------------------------------------------------------------------
  */
 
+/*
+ * The order-profile fit's normal equations, summed only where they can be nonzero
+ * (EXOAUTOMAT-304). Each pixel lies under 2-3 of the K narrow Q polynomials, so
+ * almost every term of getC/getX multiplied zeros, while every one of the ~N^2 K^2/2
+ * coefficients still visited every pixel of the order. Here each coefficient sums
+ * over the pixels where its own Q's are nonzero, in the same pixel order and with
+ * the same expressions, so the sums are the same numbers; a pair of Q's that never
+ * overlap gives 0, as before.
+ */
+typedef struct {
+  int K;
+  int* cj;          /* column of pixel c, in getQ's order          */
+  int* ci;          /* row of pixel c                              */
+  int** pair;       /* pixels where Q_k and Q_l are both nonzero    */
+  int* npair;
+} QSupport;
+
+static QSupport* MakeQSupport(double** Q,int K,double* pmin,double* pmax,int len_cols){
+ int i,j,k,l,c,ncont=0,vMin,vMax,a,b,na,nb,t;
+ QSupport* qs=(QSupport*) malloc(sizeof(QSupport));
+ for(j=0;j<len_cols;j++){
+    vMin=pmin[j];
+    vMax=pmax[j];
+    for(i=vMin;i<=vMax;i++) ncont++;
+ }
+ qs->K=K;
+ qs->cj=(int*) malloc((ncont>0?ncont:1)*sizeof(int));
+ qs->ci=(int*) malloc((ncont>0?ncont:1)*sizeof(int));
+ c=0;
+ for(j=0;j<len_cols;j++){
+    vMin=pmin[j];
+    vMax=pmax[j];
+    for(i=vMin;i<=vMax;i++){
+       qs->cj[c]=j;
+       qs->ci[c]=i;
+       c++;
+    }
+ }
+ int** S=(int**) malloc(K*sizeof(int*));
+ int* nS=(int*) calloc(K,sizeof(int));
+ for(k=0;k<K;k++){
+    S[k]=(int*) malloc((ncont>0?ncont:1)*sizeof(int));
+    for(c=0;c<ncont;c++)
+       if(Q[k][c]!=0.0) S[k][nS[k]++]=c;
+ }
+ qs->pair=(int**) calloc(K*K,sizeof(int*));
+ qs->npair=(int*) calloc(K*K,sizeof(int));
+ for(k=0;k<K;k++){
+    for(l=k;l<K;l++){
+       na=nS[k]; nb=nS[l]; a=0; b=0; t=0;
+       int* tmp=(int*) malloc(((na<nb?na:nb)>0?(na<nb?na:nb):1)*sizeof(int));
+       while(a<na && b<nb){
+          if(S[k][a]==S[l][b]){ tmp[t++]=S[k][a]; a++; b++; }
+          else if(S[k][a]<S[l][b]) a++;
+          else b++;
+       }
+       qs->pair[k*K+l]=tmp;
+       qs->pair[l*K+k]=tmp;
+       qs->npair[k*K+l]=t;
+       qs->npair[l*K+k]=t;
+    }
+ }
+ for(k=0;k<K;k++) free(S[k]);
+ free(S);
+ free(nS);
+ return qs;
+}
+
+static void FreeQSupport(QSupport* qs){
+ int k,l;
+ for(k=0;k<qs->K;k++)
+    for(l=k;l<qs->K;l++)
+       free(qs->pair[k*qs->K+l]);
+ free(qs->pair);
+ free(qs->npair);
+ free(qs->cj);
+ free(qs->ci);
+ free(qs);
+}
+
+static double CalculateCSparse(double** A,double** Q,double** VarE,int m,int l,int n,int k,double** J,QSupport* qs){
+ int t,c,i,j;
+ int* idx=qs->pair[(k-1)*qs->K+(l-1)];
+ int nidx=qs->npair[(k-1)*qs->K+(l-1)];
+ double TotalSum=0,Qk,Ql,Power;
+ for(t=0;t<nidx;t++){
+    c=idx[t];
+    j=qs->cj[c];
+    i=qs->ci[c];
+    if(A[j][i]!=-9999){
+       Qk=Q[k-1][c];
+       Ql=Q[l-1][c];
+       Power=J[n+m-2][j];
+       TotalSum=((Qk*Ql*Power)/(VarE[j][i]))+TotalSum;
+    }
+ }
+ return TotalSum;
+}
+
+static void getCSparse(double** A,double** Q,double** VarE,double** C_qp,double** J,int K,int N,QSupport* qs){
+ int p,q,m,l,n,k,dummyq;
+ double value=0;
+ p=0,q=0,dummyq=1;
+ for(k=1;k<=K;k++){
+    for(n=1;n<=N;n++){
+       for(l=1;l<=K;l++){
+          for(m=1;m<=N;m++){
+          p=N*(l-1)+m;
+          q=N*(k-1)+n;
+          if(dummyq<q){              /* the same walk over the upper triangle as getC */
+             m=n;
+             l=k;
+             p=N*(l-1)+m;
+             q=N*(k-1)+n;
+          }
+          value=CalculateCSparse(A,Q,VarE,m,l,n,k,J,qs);
+          C_qp[p-1][q-1]=value;
+          C_qp[q-1][p-1]=value;
+          dummyq=q;
+          }
+       }
+    }
+ }
+}
+
+static double CalculateXSparse(double** A,double** Q,double** E,double** VarE,int n,int k,double** J,QSupport* qs){
+ int t,c,i,j;
+ int* idx=qs->pair[(k-1)*qs->K+(k-1)];
+ int nidx=qs->npair[(k-1)*qs->K+(k-1)];
+ double TotalSum=0,Qk,Power;
+ for(t=0;t<nidx;t++){
+    c=idx[t];
+    j=qs->cj[c];
+    i=qs->ci[c];
+    if(A[j][i]!=-9999){
+       Qk=Q[k-1][c];
+       Power=J[n-1][j];
+       TotalSum=((E[j][i]*Qk*Power)/(VarE[j][i]))+TotalSum;
+    }
+ }
+ return TotalSum;
+}
+
+static void getXSparse(double** A,double** Q,double** E,double** VarE,double* X,double** J,int K,int N,QSupport* qs){
+ int q,n,k;
+ for(k=1;k<=K;k++){
+    for(n=1;n<=N;n++){
+          q=N*(k-1)+n;
+          X[q-1]=CalculateXSparse(A,Q,E,VarE,n,k,J,qs);
+    }
+ }
+}
+
 double** MarshIteration(double** M,double** VarImage,double* pmin,double* pmax,double *v,double C,double S,double RON,double GAIN,int len_v,int len_rows,int len_cols,int N,int K,int mode,int range,int debug,double NSigma, int isvarimage){
 int Iteration=1,IterNum=0;
 double** P=MakeArray(len_cols,len_rows); // FREED on Transpose.
@@ -1838,6 +2032,7 @@ double* VarRS=MakeVector(len_cols);                            /* Vector that sa
 PixelResampling(M,pmin,pmax,len_cols);
 double** Q=getQ(v,C,S,len_v,K,len_cols,range,pmin,pmax,mode);                                             /* First we obtain the Q matrix (note: independant of fit)      */
 getJ(J,N,len_cols);
+QSupport* qs=MakeQSupport(Q,K,pmin,pmax,len_cols);                                                      /* FREED here, later */
 getImageVariances(M,V,VarImage,pmin,pmax,RON,GAIN,len_cols,isvarimage);
 getRowSum(M,RS,v,pmin,pmax,len_cols,len_v);
 getE(M,RS,E,pmin,pmax,v,len_rows,len_cols);
@@ -1851,9 +2046,9 @@ getVarE(M,E,RS,VarRS,VarE,V,pmin,pmax,RON,GAIN,len_rows,len_cols);
             printf("------------------- \n");
             printf("Obtaining the profiles...\n");             /* We obtain Var(E_ij), the variances of E_ij on each pixel     */
           }
-          getC(M,Q,VarE,C_qp,J,pmin,pmax,K,N,len_cols);        /* We obtain C_qp, the matrix with the C coefficients for
+          getCSparse(M,Q,VarE,C_qp,J,K,N,qs);        /* We obtain C_qp, the matrix with the C coefficients for
                                                                   the fit                                       */
-          getX(M,Q,E,VarE,X,J,pmin,pmax,K,N,len_cols);                                /* We obtain X_q, the vector with the coefficients for the fit  */
+          getXSparse(M,Q,E,VarE,X,J,K,N,qs);                                /* We obtain X_q, the vector with the coefficients for the fit  */
           LinearSolver(C_qp,X,B,N*K);                          /* Solve the linear system C_qp*B_q=X_q, obtaining the
                                                                   B_q vector                                                   */
           getP(B,Q,P,J,pmin,pmax,K,N,len_rows,len_cols,mode);                                       /* We obtain P, the model light fractions on each pixel         */
@@ -1867,6 +2062,7 @@ getVarE(M,E,RS,VarRS,VarE,V,pmin,pmax,RON,GAIN,len_rows,len_cols);
 FreeArray(E,len_cols);                                        /* Free our vectors and matrices                                 */
 FreeArray(VarE,len_cols);
 FreeArray(C_qp,N*K);
+FreeQSupport(qs);
 FreeArray(Q,K);
 FreeArray(J,2*(N-1)+1);
 FreeArray(M,len_cols);
@@ -1903,18 +2099,66 @@ void Renormalize(double** P,double* pmin,double* pmax,int len_rows,int len_cols)
  }
 } 
 
+/*
+ * The worst cosmic-ray candidate of one column, exactly as CosmicRayRejection
+ * would find it: the largest positive Ratio, the first one on ties. *best is 0
+ * and *besti -1 when the column has none.
+ */
+static void ColumnWorstCandidate(double* Aj,double* Vj,double* Pj,double Fj,double VarFj,double CosmicSigma,double pminj,double pmaxj,double* best,int* besti){
+int i,vMin=pminj,vMax=pmaxj;
+double Ratio,count,fluxcount,countsigma,fluxcountsigma;
+*best=0;
+*besti=-1;
+for(i=vMin;i<=vMax;i++){
+  if(Aj[i]!=-9999){
+    count=Aj[i];
+    countsigma=sqrt(Vj[i]);
+    fluxcount=Fj*Pj[i];
+    fluxcountsigma=sqrt(VarFj)*Pj[i];
+    if(count>=fluxcount)
+      Ratio=(count-CosmicSigma*countsigma)-(fluxcount+CosmicSigma*fluxcountsigma);
+    else
+      Ratio=(fluxcount-CosmicSigma*fluxcountsigma)-(count+CosmicSigma*countsigma);
+    if(Ratio>0 && *best<Ratio){
+      *best=Ratio;
+      *besti=i;
+    }
+  }
+}
+}
+
 double** getSpectrum(double** A,double** VarImage,double** P,double *v,int len_v,double* pmin,double* pmax,double RON,double GAIN,int len_rows,int len_cols,double CosmicSigma,int debug,int isvarimage){
-int j;
+int j,jj,b0,b1;
 int Iteration=1,IterNum=0;
-double** W=MakeArray(len_cols,len_rows); // FREED, later
-double** V=MakeArray(len_cols,len_rows); // FREED, later
+ApertureBand(pmin,pmax,len_cols,len_rows,&b0,&b1);
+double** W=MakeBandArray(len_cols,b0,b1); // FREED, later
+double** V=MakeBandArray(len_cols,b0,b1); // FREED, later
 double* F=MakeVector(len_cols); // FREED, later
 double* VarF=MakeVector(len_cols); // FREED, later
 double* RSW=MakeVector(len_cols); // FREED, later
+/*
+ * Marsh's loop re-estimates the variances, weights and fluxes of every column,
+ * then rejects the single worst outlier of the whole order, until there is none:
+ * an order with N outliers costs N full passes (EXOAUTOMAT-304: most of a FEROS
+ * night). Every one of those quantities is per column, so a pass changes a column
+ * only while its flux is still moving or after one of its pixels was rejected.
+ * Once a column's flux reproduces itself bit for bit, further passes return the
+ * same numbers, so it is skipped until a rejection lands on it, and its worst
+ * candidate is kept from its last pass. The passes, the rejections and every
+ * result are the same as the full loop's.
+ */
+int* dirty=(int*) malloc(len_cols*sizeof(int)); // FREED, later
+int* besti=(int*) malloc(len_cols*sizeof(int)); // FREED, later
+double* best=MakeVector(len_cols); // FREED, later
+double Fprev,Worst;
+for(j=0;j<len_cols;j++){
+   dirty[j]=1;
+   best[j]=0;
+   besti[j]=-1;
+}
 PixelResampling(A,pmin,pmax,len_cols);
 getRowSum(A,F,v,pmin,pmax,len_cols,len_v);
-        while(Iteration == 1){   
-	  VarRevision(A,VarImage,V,F,P,pmin,pmax,len_cols,RON,GAIN,isvarimage);
+        while(Iteration == 1){
           IterNum+=1;
           if(debug!=0){
             printf("------------------- \n");
@@ -1922,26 +2166,54 @@ getRowSum(A,F,v,pmin,pmax,len_cols,len_v);
             printf("------------------- \n");
             printf("Obtaining the spectrum...\n");
           }
-	  getRowSumW(A,V,P,pmin,pmax,RSW,len_cols);    /* We obtain the denominator for the W_i (see Marsh (1989), eq. (4)) */
-          getW(A,P,V,RSW,W,pmin,pmax,len_cols);        /* We obtain the weights to estimate the fluxes.                     */
-          getF(W,A,F,pmin,pmax,len_cols);
-          getVarF(A,W,V,VarF,pmin,pmax,len_cols);
-          if(CosmicSigma==0)
+          for(j=0;j<len_cols;j++){
+             if(dirty[j]==0)
+               continue;
+             Fprev=F[j];
+             VarRevision(A+j,isvarimage ? VarImage+j : VarImage,V+j,F+j,P+j,pmin+j,pmax+j,1,RON,GAIN,isvarimage);
+             getRowSumW(A+j,V+j,P+j,pmin+j,pmax+j,RSW+j,1);    /* the denominator of the W_i (Marsh (1989), eq. (4)) */
+             getW(A+j,P+j,V+j,RSW+j,W+j,pmin+j,pmax+j,1);      /* the weights to estimate the fluxes                  */
+             getF(W+j,A+j,F+j,pmin+j,pmax+j,1);
+             getVarF(A+j,W+j,V+j,VarF+j,pmin+j,pmax+j,1);
+             if(CosmicSigma!=0)
+               ColumnWorstCandidate(A[j],V[j],P[j],F[j],VarF[j],CosmicSigma,pmin[j],pmax[j],&best[j],&besti[j]);
+             dirty[j]=(F[j]!=Fprev);
+          }
+          if(CosmicSigma==0){
              Iteration=0;
-          else
-             Iteration=CosmicRayRejection(A,V,P,F,VarF,CosmicSigma,pmin,pmax,len_cols,debug);
+             continue;
+          }
+          jj=-1;
+          Worst=0;
+          for(j=0;j<len_cols;j++){
+             if(besti[j]>=0 && Worst<best[j]){
+               Worst=best[j];
+               jj=j;
+             }
+          }
+          if(jj<0){
+             Iteration=0;
+          }
+          else{
+             if(debug!=0){
+               printf("Cosmic ray found at column %d row %d \n",jj,besti[jj]);
+             }
+             A[jj][besti[jj]]=-9999;
+             dirty[jj]=1;
+          }
         }
+free(dirty);
+free(besti);
+free(best);
 double** Spectrum=MakeArray(3,len_cols); // FREED, on the main code
 for(j=0;j<len_cols;j++){
    Spectrum[0][j]=(double)j;
    Spectrum[1][j]=F[j];
    Spectrum[2][j]=(double)1/(VarF[j]);
 }
-FreeArray(W,len_cols);
-FreeArray(V,len_cols);
-FreeArray(P,len_cols);
-FreeArray(A,len_cols);
-FreeArray(VarImage,len_cols);
+FreeBandArray(W);
+FreeBandArray(V);
+/* A, P and VarImage belong to the caller. */
 free(F);
 free(VarF);
 // free(OutlierDetector);

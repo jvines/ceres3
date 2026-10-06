@@ -183,6 +183,29 @@ MOON_SIGMA_RANGE = (2.0, 8.0)  # km/s
 MOON_FLAG_FRAC = 1.0
 
 
+# CCF mask by effective temperature, the boundaries ExoAutomata assigns masks with
+# (the HARPS DRS convention: G2 to ~K0, K5 for K1-K7, M2 for M dwarfs). Used when the
+# targets file gives no mask, on the frame's Coelho classification (EXOAUTOMAT-308).
+MASK_G2_MIN_TEFF = 5200.0
+MASK_K5_MIN_TEFF = 3900.0
+
+
+def mask_for_teff(teff):
+    """'G2', 'K5' or 'M2' for a Teff in K; None when there is no usable Teff
+    (the classification writes -999 when it did not run or failed)."""
+    try:
+        teff = float(teff)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(teff) or teff <= 0:
+        return None
+    if teff >= MASK_G2_MIN_TEFF:
+        return 'G2'
+    if teff >= MASK_K5_MIN_TEFF:
+        return 'K5'
+    return 'M2'
+
+
 def moon_separation(moon_vel, rv, sigma):
     """|moon velocity - stellar CCF centre| in units of the stellar CCF Gaussian sigma.
 

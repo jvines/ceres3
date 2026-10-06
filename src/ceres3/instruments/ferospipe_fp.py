@@ -1994,6 +1994,10 @@ if (not JustExtract):
         _target = targets_mod.lookup(targets, obname)
         if _target is not None and _target.mask:
             sp_type, mask_source = _target.mask, 'targets'
+        elif ferosutils_fp.mask_for_teff(T_eff) is not None:
+            # No mask was given for this star: use this frame's Coelho classification
+            # (EXOAUTOMAT-308), with the boundaries ExoAutomata assigns masks by.
+            sp_type, mask_source = ferosutils_fp.mask_for_teff(T_eff), 'classification'
         else:
             sp_type, mask_source = 'G2', 'default'
         mask = _xc_masks_dir + sp_type + '.mas'

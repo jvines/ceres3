@@ -1858,6 +1858,159 @@ int OutlierRejection(double** A,double** V,double** P,double** E,double** VarE,d
  * ---------------------------------------------------------------------------
  */
 
+/*
+ * The order-profile fit's normal equations, summed only where they can be nonzero
+ * (EXOAUTOMAT-304). Each pixel lies under 2-3 of the K narrow Q polynomials, so
+ * almost every term of getC/getX multiplied zeros, while every one of the ~N^2 K^2/2
+ * coefficients still visited every pixel of the order. Here each coefficient sums
+ * over the pixels where its own Q's are nonzero, in the same pixel order and with
+ * the same expressions, so the sums are the same numbers; a pair of Q's that never
+ * overlap gives 0, as before.
+ */
+typedef struct {
+  int K;
+  int* cj;          /* column of pixel c, in getQ's order          */
+  int* ci;          /* row of pixel c                              */
+  int** pair;       /* pixels where Q_k and Q_l are both nonzero    */
+  int* npair;
+} QSupport;
+
+static QSupport* MakeQSupport(double** Q,int K,double* pmin,double* pmax,int len_cols){
+ int i,j,k,l,c,ncont=0,vMin,vMax,a,b,na,nb,t;
+ QSupport* qs=(QSupport*) malloc(sizeof(QSupport));
+ for(j=0;j<len_cols;j++){
+    vMin=pmin[j];
+    vMax=pmax[j];
+    for(i=vMin;i<=vMax;i++) ncont++;
+ }
+ qs->K=K;
+ qs->cj=(int*) malloc((ncont>0?ncont:1)*sizeof(int));
+ qs->ci=(int*) malloc((ncont>0?ncont:1)*sizeof(int));
+ c=0;
+ for(j=0;j<len_cols;j++){
+    vMin=pmin[j];
+    vMax=pmax[j];
+    for(i=vMin;i<=vMax;i++){
+       qs->cj[c]=j;
+       qs->ci[c]=i;
+       c++;
+    }
+ }
+ int** S=(int**) malloc(K*sizeof(int*));
+ int* nS=(int*) calloc(K,sizeof(int));
+ for(k=0;k<K;k++){
+    S[k]=(int*) malloc((ncont>0?ncont:1)*sizeof(int));
+    for(c=0;c<ncont;c++)
+       if(Q[k][c]!=0.0) S[k][nS[k]++]=c;
+ }
+ qs->pair=(int**) calloc(K*K,sizeof(int*));
+ qs->npair=(int*) calloc(K*K,sizeof(int));
+ for(k=0;k<K;k++){
+    for(l=k;l<K;l++){
+       na=nS[k]; nb=nS[l]; a=0; b=0; t=0;
+       int* tmp=(int*) malloc(((na<nb?na:nb)>0?(na<nb?na:nb):1)*sizeof(int));
+       while(a<na && b<nb){
+          if(S[k][a]==S[l][b]){ tmp[t++]=S[k][a]; a++; b++; }
+          else if(S[k][a]<S[l][b]) a++;
+          else b++;
+       }
+       qs->pair[k*K+l]=tmp;
+       qs->pair[l*K+k]=tmp;
+       qs->npair[k*K+l]=t;
+       qs->npair[l*K+k]=t;
+    }
+ }
+ for(k=0;k<K;k++) free(S[k]);
+ free(S);
+ free(nS);
+ return qs;
+}
+
+static void FreeQSupport(QSupport* qs){
+ int k,l;
+ for(k=0;k<qs->K;k++)
+    for(l=k;l<qs->K;l++)
+       free(qs->pair[k*qs->K+l]);
+ free(qs->pair);
+ free(qs->npair);
+ free(qs->cj);
+ free(qs->ci);
+ free(qs);
+}
+
+static double CalculateCSparse(double** A,double** Q,double** VarE,int m,int l,int n,int k,double** J,QSupport* qs){
+ int t,c,i,j;
+ int* idx=qs->pair[(k-1)*qs->K+(l-1)];
+ int nidx=qs->npair[(k-1)*qs->K+(l-1)];
+ double TotalSum=0,Qk,Ql,Power;
+ for(t=0;t<nidx;t++){
+    c=idx[t];
+    j=qs->cj[c];
+    i=qs->ci[c];
+    if(A[j][i]!=-9999){
+       Qk=Q[k-1][c];
+       Ql=Q[l-1][c];
+       Power=J[n+m-2][j];
+       TotalSum=((Qk*Ql*Power)/(VarE[j][i]))+TotalSum;
+    }
+ }
+ return TotalSum;
+}
+
+static void getCSparse(double** A,double** Q,double** VarE,double** C_qp,double** J,int K,int N,QSupport* qs){
+ int p,q,m,l,n,k,dummyq;
+ double value=0;
+ p=0,q=0,dummyq=1;
+ for(k=1;k<=K;k++){
+    for(n=1;n<=N;n++){
+       for(l=1;l<=K;l++){
+          for(m=1;m<=N;m++){
+          p=N*(l-1)+m;
+          q=N*(k-1)+n;
+          if(dummyq<q){              /* the same walk over the upper triangle as getC */
+             m=n;
+             l=k;
+             p=N*(l-1)+m;
+             q=N*(k-1)+n;
+          }
+          value=CalculateCSparse(A,Q,VarE,m,l,n,k,J,qs);
+          C_qp[p-1][q-1]=value;
+          C_qp[q-1][p-1]=value;
+          dummyq=q;
+          }
+       }
+    }
+ }
+}
+
+static double CalculateXSparse(double** A,double** Q,double** E,double** VarE,int n,int k,double** J,QSupport* qs){
+ int t,c,i,j;
+ int* idx=qs->pair[(k-1)*qs->K+(k-1)];
+ int nidx=qs->npair[(k-1)*qs->K+(k-1)];
+ double TotalSum=0,Qk,Power;
+ for(t=0;t<nidx;t++){
+    c=idx[t];
+    j=qs->cj[c];
+    i=qs->ci[c];
+    if(A[j][i]!=-9999){
+       Qk=Q[k-1][c];
+       Power=J[n-1][j];
+       TotalSum=((E[j][i]*Qk*Power)/(VarE[j][i]))+TotalSum;
+    }
+ }
+ return TotalSum;
+}
+
+static void getXSparse(double** A,double** Q,double** E,double** VarE,double* X,double** J,int K,int N,QSupport* qs){
+ int q,n,k;
+ for(k=1;k<=K;k++){
+    for(n=1;n<=N;n++){
+          q=N*(k-1)+n;
+          X[q-1]=CalculateXSparse(A,Q,E,VarE,n,k,J,qs);
+    }
+ }
+}
+
 double** MarshIteration(double** M,double** VarImage,double* pmin,double* pmax,double *v,double C,double S,double RON,double GAIN,int len_v,int len_rows,int len_cols,int N,int K,int mode,int range,int debug,double NSigma, int isvarimage){
 int Iteration=1,IterNum=0;
 double** P=MakeArray(len_cols,len_rows); // FREED on Transpose.
@@ -1879,6 +2032,7 @@ double* VarRS=MakeVector(len_cols);                            /* Vector that sa
 PixelResampling(M,pmin,pmax,len_cols);
 double** Q=getQ(v,C,S,len_v,K,len_cols,range,pmin,pmax,mode);                                             /* First we obtain the Q matrix (note: independant of fit)      */
 getJ(J,N,len_cols);
+QSupport* qs=MakeQSupport(Q,K,pmin,pmax,len_cols);                                                      /* FREED here, later */
 getImageVariances(M,V,VarImage,pmin,pmax,RON,GAIN,len_cols,isvarimage);
 getRowSum(M,RS,v,pmin,pmax,len_cols,len_v);
 getE(M,RS,E,pmin,pmax,v,len_rows,len_cols);
@@ -1892,9 +2046,9 @@ getVarE(M,E,RS,VarRS,VarE,V,pmin,pmax,RON,GAIN,len_rows,len_cols);
             printf("------------------- \n");
             printf("Obtaining the profiles...\n");             /* We obtain Var(E_ij), the variances of E_ij on each pixel     */
           }
-          getC(M,Q,VarE,C_qp,J,pmin,pmax,K,N,len_cols);        /* We obtain C_qp, the matrix with the C coefficients for
+          getCSparse(M,Q,VarE,C_qp,J,K,N,qs);        /* We obtain C_qp, the matrix with the C coefficients for
                                                                   the fit                                       */
-          getX(M,Q,E,VarE,X,J,pmin,pmax,K,N,len_cols);                                /* We obtain X_q, the vector with the coefficients for the fit  */
+          getXSparse(M,Q,E,VarE,X,J,K,N,qs);                                /* We obtain X_q, the vector with the coefficients for the fit  */
           LinearSolver(C_qp,X,B,N*K);                          /* Solve the linear system C_qp*B_q=X_q, obtaining the
                                                                   B_q vector                                                   */
           getP(B,Q,P,J,pmin,pmax,K,N,len_rows,len_cols,mode);                                       /* We obtain P, the model light fractions on each pixel         */
@@ -1908,6 +2062,7 @@ getVarE(M,E,RS,VarRS,VarE,V,pmin,pmax,RON,GAIN,len_rows,len_cols);
 FreeArray(E,len_cols);                                        /* Free our vectors and matrices                                 */
 FreeArray(VarE,len_cols);
 FreeArray(C_qp,N*K);
+FreeQSupport(qs);
 FreeArray(Q,K);
 FreeArray(J,2*(N-1)+1);
 FreeArray(M,len_cols);

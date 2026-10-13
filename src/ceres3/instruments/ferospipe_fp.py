@@ -2249,7 +2249,10 @@ if (not JustExtract):
         hdu[0] = GLOBALutils.update_header(hdu[0],'BJD_OUT', bjd_out)
 
         # Activity indicators + merged 1D rest-frame spectrum
-        spectrum_1d_path = os.path.join(dirout, 'proc', fout.replace('_sp.fits', '_1d.fits'))
+        # fout already starts with proc/: joining 'proc' again pointed every 1D
+        # spectrum at dirout/proc/proc/, which does not exist, so compute_activity
+        # could never write one and no product carried SPEC1D (EXOAUTOMAT-333).
+        spectrum_1d_path = os.path.join(dirout, fout.replace('_sp.fits', '_1d.fits'))
         try:
             from ceres3.utils.activity import compute_activity
             activity = compute_activity(spec, instrument='feros', output_1d_path=spectrum_1d_path,

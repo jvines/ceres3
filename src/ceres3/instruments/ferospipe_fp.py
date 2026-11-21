@@ -56,6 +56,9 @@ parser.add_argument('-targets', default=None, help='JSON file with per-target as
 parser.add_argument('-lamp',default='LAMP3')
 parser.add_argument('-ref_thar',default=None)
 parser.add_argument('-nsigmas', type=float, default=5.0, help='Sigma threshold for order detection (lower = more sensitive to faint lamps)')
+parser.add_argument('-drift_max_gap', type=float, default=ferosutils_fp.DRIFT_INTERP_MAX_GAP_MIN,
+                    help='Max gap [min] to the nearest measured drift for an ObjCal frame whose own '
+                         'drift fit failed to take the interpolated drift (EXOAUTOMAT-242).')
 parser.add_argument('-is_calib', action='store_true', default=False, help='Flag that signals these are calibration files (and not science files).')
 
 args   = parser.parse_args()
@@ -72,6 +75,7 @@ ref_thar          = args.ref_thar
 nsigmas          = args.nsigmas
 is_calib = args.is_calib
 calib_dir = args.calib_dir
+drift_max_gap = args.drift_max_gap
 
 ####### GLOBAL VARIABLES #####
 ## perhaps put into options ##
@@ -900,6 +904,9 @@ if ref_quality['grade'] != 'good':
             "reduce against a healthy night's reference with -ref_thar")
     print(f"WARNING: {_pipeline_warnings[-1]}")
 drift_failed_frames = []    # science frames whose drift could not be measured to 5 m/s
+# ThAr ObjCal frames written this run whose own drift fit failed: (product, mjd, precision).
+# After the loop they take the drift interpolated from the night's measured ones.
+objcal_drift_failed = []
 
 print('\n\tExtraction of FP calibration frames:')
 
@@ -1649,6 +1656,10 @@ for fsim in comp_list:
                 hdu = GLOBALutils.update_header(hdu, _k, _v, _c)
             hdu = GLOBALutils.update_header(hdu,'HIERARCH WAVSOL ERROR', fp_error_co, '[m/s]')
             hdu = GLOBALutils.update_header(hdu,'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
+            for _k, _v, _c in ferosutils_fp.drift_source_cards(
+                    ferosutils_fp.DRIFT_SOURCE_MEASURED if drift_ok else ferosutils_fp.DRIFT_SOURCE_NONE,
+                    0. if drift_ok else None):
+                hdu = GLOBALutils.update_header(hdu, _k, _v, _c)
 
         elif comp_type == 'WAVE' or (ferosutils_fp.hasFP(h) and ref_fp_pkl is None):
             if ferosutils_fp.hasFP(h) and ref_fp_pkl is None:
@@ -1759,6 +1770,16 @@ for fsim in comp_list:
                 hdu = GLOBALutils.update_header(hdu, _k, _v, _c)
             hdu = GLOBALutils.update_header(hdu,'HIERARCH WAVSOL ERROR', precision, '[m/s]')
             hdu = GLOBALutils.update_header(hdu,'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
+            # A failed frame is provisionally NONE; it is revisited after the loop,
+            # once the night's measured drifts are all known.
+            for _k, _v, _c in ferosutils_fp.drift_source_cards(
+                    ferosutils_fp.DRIFT_SOURCE_MEASURED if drift_ok else ferosutils_fp.DRIFT_SOURCE_NONE,
+                    0. if drift_ok else None):
+                hdu = GLOBALutils.update_header(hdu, _k, _v, _c)
+            if not drift_ok and comp_type == 'WAVE':
+                # Only 'WAVE' frames apply p_shift to their wavelengths below, so only
+                # they may receive an interpolated one.
+                objcal_drift_failed.append((fout, mjd, precision))
         # Apply new wavelength solution including barycentric correction
         equis = np.arange( data.shape[1] )
         order = o0
@@ -1841,6 +1862,27 @@ p_mjds,p_shifts = p_mjds[I],p_shifts[I]
 #plot(p_mjds,p_shifts,'ro')
 #show()
 
+# ObjCal frames whose own simultaneous-fibre drift fit failed (EXOAUTOMAT-242) used to
+# keep INSTRUMENTAL DRIFT = 0, i.e. no correction at all, ~86 m/s typical on tau Ceti.
+# They now take the drift interpolated from the night's measured drifts, when one lies
+# within drift_max_gap minutes, applied exactly as for ObjSky frames below. Measured
+# frames are not touched here.
+n_drift_interpolated = 0
+for fout_f, mjd_f, precision_f in objcal_drift_failed:
+    p_shift, drift_src, drift_gap = ferosutils_fp.interpolate_failed_drift(
+        mjd_f, p_mjds, p_shifts, drift_max_gap)
+    hdu = pyfits.open(dirout + fout_f, mode='update')
+    if drift_src == ferosutils_fp.DRIFT_SOURCE_INTERPOLATED:
+        n_drift_interpolated += 1
+        hdu[0].data[0,:,:] *= (1.0 + 1.0e-6*p_shift)
+        for _k, _v, _c in ferosutils_fp.wavsol_quality_cards(True, ref_quality, precision_f):
+            hdu[0] = GLOBALutils.update_header(hdu[0], _k, _v, _c)
+        hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
+    for _k, _v, _c in ferosutils_fp.drift_source_cards(drift_src, drift_gap, len(p_mjds)):
+        hdu[0] = GLOBALutils.update_header(hdu[0], _k, _v, _c)
+    hdu.flush()
+    hdu.close()
+
 if len(p_mjds) > 3:
     tck_shift = scipy.interpolate.splrep(p_mjds,p_shifts,k=1)
 elif len(p_mjds) > 1:
@@ -1873,6 +1915,10 @@ for fsim in new_sky:
     for _k, _v, _c in ferosutils_fp.wavsol_quality_cards(drift_ok, ref_quality):
         hdu[0] = GLOBALutils.update_header(hdu[0], _k, _v, _c)
     hdu[0] = GLOBALutils.update_header(hdu[0],'HIERARCH INSTRUMENTAL DRIFT',299792458.*p_shift/1e6)
+    for _k, _v, _c in ferosutils_fp.drift_source_cards(
+            ferosutils_fp.DRIFT_SOURCE_INTERPOLATED if drift_ok else ferosutils_fp.DRIFT_SOURCE_NONE,
+            ferosutils_fp.nearest_anchor_gap_min(mjd, p_mjds), len(p_mjds)):
+        hdu[0] = GLOBALutils.update_header(hdu[0], _k, _v, _c)
     hdu.flush()
     hdu.close()
 
@@ -1885,8 +1931,10 @@ if len(new_sky) > 0 and len(p_mjds) == 0:
 if len(drift_failed_frames) > 0:
     _pipeline_warnings.append(
         f"{len(drift_failed_frames)} of {len(new_list)} ObjCal frame(s) could not measure their drift "
-        f"to 5 m/s (e.g. {drift_failed_frames[0]}); their RVs are flagged (GOOD QUALITY DRIFT = F) "
-        "and they do not anchor the ObjSky drift interpolation")
+        f"to 5 m/s (e.g. {drift_failed_frames[0]}) and do not anchor the drift interpolation; "
+        f"{n_drift_interpolated} took the drift interpolated from a measured frame within "
+        f"{drift_max_gap:g} min (DRIFT SOURCE = INTERPOLATED), the rest are uncorrected and "
+        "flagged (GOOD QUALITY DRIFT = F, DRIFT SOURCE = NONE)")
     print(f"WARNING: {_pipeline_warnings[-1]}")
 
 print("\n\tSarting with the post-processing:")

@@ -856,6 +856,20 @@ CALIB_QUALITY_FILE    = 'calib_quality.json'
 
 DRIFT_MAX_ERR_MS = 5.0      # drift precision the science frames are held to
 
+# Largest gap [min] between an ObjCal frame whose own drift fit failed and the
+# nearest measured drift of the night for which the interpolated drift is used
+# (EXOAUTOMAT-242). Leave-one-out on 449 measured tau Ceti frames, interpolating
+# from the same night's measured drifts of any target: |error| median 7.3 m/s
+# (p90 23) at <15 min, 10.9 (p90 29) at 15-30 min, 21 (p90 38) at 30-60 min,
+# 27 (p90 90) at 60-90 min, and 60-90 m/s beyond 3 h. A failed frame left
+# uncorrected is off by its whole drift, ~86 m/s typical. At 60 min the p90
+# error is still under half of that; beyond it the p90 reaches the drift itself.
+DRIFT_INTERP_MAX_GAP_MIN = 60.0
+
+DRIFT_SOURCE_MEASURED     = 'MEASURED'
+DRIFT_SOURCE_INTERPOLATED = 'INTERPOLATED'
+DRIFT_SOURCE_NONE         = 'NONE'
+
 # FEROS geometry of the global solution, used only to re-evaluate a pre-1.2
 # pickle whose stored residuals do not match its stored lines (see
 # _kept_residuals_ms). New pickles record these values themselves.
@@ -1085,6 +1099,60 @@ def wavsol_quality_cards(drift_ok, ref_quality, drift_error_ms=None):
         ('HIERARCH WAVSOL FLAG REASON', wavsol_flag_reason(drift_ok, ref_quality, drift_error_ms), ''),
         ('HIERARCH CERES3 VERSION', _ceres3_version(), ''),
     ]
+
+
+def nearest_anchor_gap_min(mjd, anchor_mjds):
+    """Minutes from ``mjd`` to the nearest anchor, or None when there is none."""
+    a = np.asarray(anchor_mjds, dtype=float)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return None
+    return float(np.min(np.abs(a - float(mjd))) * 1440.0)
+
+
+def interpolate_failed_drift(mjd, anchor_mjds, anchor_shifts,
+                             max_gap_min=DRIFT_INTERP_MAX_GAP_MIN):
+    """
+    Drift for an ObjCal frame whose simultaneous-fibre drift fit failed.
+
+    ``anchor_mjds``/``anchor_shifts`` are the night's measured drifts (the
+    arrays that also drive the ObjSky spline; shifts in the pipeline's units,
+    1e6 * v / c). Between anchors this is linear interpolation, identical to the
+    k=1 spline used for ObjSky frames. Outside the anchored span the nearest
+    anchor is held instead of extrapolated: leave-one-out on tau Ceti, linear
+    extrapolation raises the p90 error from 25 to 35 m/s.
+
+    Returns ``(p_shift, source, gap_min)``. ``source`` is INTERPOLATED when the
+    nearest anchor is within ``max_gap_min`` minutes, else NONE with
+    ``p_shift = 0.`` (no correction, the pre-1.3.5 behaviour). ``gap_min`` is
+    None when the night has no anchor at all.
+    """
+    t = np.asarray(anchor_mjds, dtype=float)
+    s = np.asarray(anchor_shifts, dtype=float)
+    ok = np.isfinite(t) & np.isfinite(s)
+    t, s = t[ok], s[ok]
+    gap = nearest_anchor_gap_min(mjd, t)
+    if gap is None or max_gap_min is None or not (gap <= float(max_gap_min)):
+        return 0., DRIFT_SOURCE_NONE, gap
+    order = np.argsort(t, kind='stable')
+    return float(np.interp(float(mjd), t[order], s[order])), DRIFT_SOURCE_INTERPOLATED, gap
+
+
+def drift_source_cards(source, gap_min, n_anchors=None):
+    """
+    Header cards saying where a frame's INSTRUMENTAL DRIFT came from.
+
+    ``n_anchors`` (the night's number of measured drifts) is only known once the
+    whole night is reduced, so measured frames, written during the loop, omit it.
+    """
+    cards = [
+        ('HIERARCH DRIFT SOURCE', str(source), 'MEASURED / INTERPOLATED / NONE'),
+        ('HIERARCH DRIFT ANCHOR GAP', float(np.around(gap_min, 2)) if gap_min is not None else -1.0,
+         '[min] to nearest measured drift'),
+    ]
+    if n_anchors is not None:
+        cards.append(('HIERARCH DRIFT NANCHORS', int(n_anchors), 'measured drifts on the night'))
+    return cards
 
 
 def _jsonable(v):

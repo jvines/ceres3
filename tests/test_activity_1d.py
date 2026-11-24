@@ -51,7 +51,7 @@ def _pack_3d_cube(
     cube = np.zeros((N_LAYERS, 1, n_pix))
     cube[0, 0, :] = wavelength
     cube[5, 0, :] = flux
-    cube[6, 0, :] = error
+    cube[6, 0, :] = 1.0 / error**2  # layer 6 is the inverse variance, not sigma
     cube[8, 0, :] = flux / np.clip(error, 1e-9, None)  # SNR
     return cube
 
@@ -89,6 +89,18 @@ def test_2d_array_matches_3d_post_merge(synthetic_spectrum) -> None:
 
     for key in ("s_index", "halpha", "nai_d1d2", "hbeta", "mg_ib"):
         assert result_2d[key] == pytest.approx(result_3d[key], rel=1e-6), key
+        assert result_2d[key + "_err"] == pytest.approx(result_3d[key + "_err"], rel=1e-6), key
+
+
+def test_3d_layer6_is_read_as_inverse_variance(synthetic_spectrum) -> None:
+    """Layer 6 of the cube is ivar; reading it as sigma inflated every index
+    error by orders of magnitude (EXOAUTOMAT-628)."""
+    wavelength, flux, error = synthetic_spectrum
+    small = compute_activity(_pack_3d_cube(wavelength, flux, error * 0.01), instrument="feros")
+    large = compute_activity(_pack_3d_cube(wavelength, flux, error), instrument="feros")
+
+    assert 0 < small["halpha_err"] < large["halpha_err"]
+    assert small["halpha_err"] == pytest.approx(0.01 * large["halpha_err"], rel=1e-3)
 
 
 def test_2d_array_without_error_falls_back_to_poisson(synthetic_spectrum) -> None:

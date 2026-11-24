@@ -246,7 +246,12 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
     # branch; auto-nightly on the 3-D branch.
     spec = np.asarray(spec)
     if spec.ndim == 3:
-        wavelength, flux, error = merge_echelle(spec)
+        wavelength, flux, ivar = merge_echelle(spec)
+        # Layer 6 of the CERES _sp.fits cube is the INVERSE VARIANCE of the
+        # normalised flux (spec[4] * ratio**2, spec[4] = extraction ivar * flat**2),
+        # not a 1-sigma error. Used as sigma it made every index error ~1e3-1e4.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            error = np.where(ivar > 0, 1.0 / np.sqrt(ivar), np.inf)
     elif spec.ndim == 2 and spec.shape[0] >= 2:
         wavelength = np.asarray(spec[0], dtype=float)
         flux = np.asarray(spec[1], dtype=float)

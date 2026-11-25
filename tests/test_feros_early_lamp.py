@@ -64,3 +64,10 @@ def test_2003_frames_without_lamp_or_adc_keywords_classify(tmp_path):
     out = F.FileClassify(str(tmp_path) + "/", str(tmp_path / "night.log"))
     assert len(out[2]) == 1 and len(out[3]) == 1 and len(out[5]) == 1
     assert "hd181809" in (tmp_path / "night.log").read_text()
+
+
+def test_get_rg_without_read_mode_card():
+    assert F.get_RG(fits.Header()) == (7.2, 2.7)
+    h = fits.Header()
+    h["HIERARCH ESO DET READ MODE"] = "normal"
+    assert F.get_RG(h) == (5.1, 3.2)

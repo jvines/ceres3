@@ -42,3 +42,25 @@ def test_early_night_requested_lamp_is_unchanged(tmp_path):
 def test_modern_night_lamp3_is_unchanged(tmp_path):
     a, b = _classify(tmp_path, [("2020-03-07T18:48:31.258", "LAMP3")])
     assert a == [] and len(b) == 1
+
+
+def test_2003_frames_without_lamp_or_adc_keywords_classify(tmp_path):
+    """2003 headers carry neither CALMIRR2 nor INS ADC1 RA/DEC."""
+    h = fits.PrimaryHDU(np.zeros((2, 2), dtype="f4"))
+    h.header["HIERARCH ESO DPR TYPE"] = "WAVE"
+    h.header["DATE-OBS"] = "2003-07-09T11:46:46.000"
+    h.header["MJD-OBS"] = 52829.49
+    h.header["EXPTIME"] = 600.0
+    h.writeto(tmp_path / "w.fits")
+    s = fits.PrimaryHDU(np.zeros((2, 2), dtype="f4"))
+    s.header["HIERARCH ESO DPR TYPE"] = "OBJECT,SKY"
+    s.header["DATE-OBS"] = "2003-07-09T03:52:47.000"
+    s.header["MJD-OBS"] = 52829.16
+    s.header["EXPTIME"] = 600.0
+    s.header["OBJECT"] = "hd181809"
+    s.header["RA"] = 290.69817
+    s.header["DEC"] = -20.63892
+    s.writeto(tmp_path / "s.fits")
+    out = F.FileClassify(str(tmp_path) + "/", str(tmp_path / "night.log"))
+    assert len(out[2]) == 1 and len(out[3]) == 1 and len(out[5]) == 1
+    assert "hd181809" in (tmp_path / "night.log").read_text()

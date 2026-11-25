@@ -389,8 +389,8 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
                     #elif h[0].header['HIERARCH ESO INS CALMIRR2 ID'] == 'LAMP3':
                     simThAr_sci.append(archivo)
                 obname = h[0].header['OBJECT']
-                ra     = h[0].header['HIERARCH ESO INS ADC1 RA']
-                delta  = h[0].header['HIERARCH ESO INS ADC1 DEC']
+                ra     = h[0].header.get('HIERARCH ESO INS ADC1 RA', h[0].header.get('RA', -999.))
+                delta  = h[0].header.get('HIERARCH ESO INS ADC1 DEC', h[0].header.get('DEC', -999.))
                 try:
                     airmass= h[0].header['HIERARCH ESO TEL AIRM START']
                 except:
@@ -402,8 +402,8 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
             elif h[0].header['HIERARCH ESO DPR TYPE'] == 'OBJECT,SKY' or h[0].header['HIERARCH ESO DPR TYPE'] == 'VELOC,SKY':
                 simSky_sci.append(archivo)
                 obname = h[0].header['OBJECT']
-                ra     = h[0].header['HIERARCH ESO INS ADC1 RA']
-                delta  = h[0].header['HIERARCH ESO INS ADC1 DEC']
+                ra     = h[0].header.get('HIERARCH ESO INS ADC1 RA', h[0].header.get('RA', -999.))
+                delta  = h[0].header.get('HIERARCH ESO INS ADC1 DEC', h[0].header.get('DEC', -999.))
                 try:
                     airmass= h[0].header['HIERARCH ESO TEL AIRM START']
                 except:
@@ -431,7 +431,7 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
                         ThAr_Ne_ref.append(archivo)
                         ThAr_Ne_ref_dates.append( mjd )
                 else:
-                    old_wave.append((archivo, mjd, h[0].header['HIERARCH ESO INS CALMIRR2 ID']))
+                    old_wave.append((archivo, mjd, h[0].header.get('HIERARCH ESO INS CALMIRR2 ID', '')))
 
             elif h[0].header['HIERARCH ESO DPR TYPE'] == 'DARK':
                 darks.append(archivo)

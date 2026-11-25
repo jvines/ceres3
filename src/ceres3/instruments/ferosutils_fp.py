@@ -342,6 +342,7 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
     ThAr_FP     = []
     FP_FP       = []
     FP_sci      = []
+    old_wave    = []
 
     f = open(log,'w')
     bad_files = []
@@ -430,19 +431,26 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
                         ThAr_Ne_ref.append(archivo)
                         ThAr_Ne_ref_dates.append( mjd )
                 else:
-                    if h[0].header['HIERARCH ESO INS CALMIRR2 ID'] == lamp:
-                        ThArNe_ref.append(archivo)
-                        ThArNe_ref_dates.append( mjd )
-
-                    if h[0].header['HIERARCH ESO INS CALMIRR2 ID'] == lamp:
-                        ThAr_Ne_ref.append(archivo)
-                        ThAr_Ne_ref_dates.append( mjd )
+                    old_wave.append((archivo, mjd, h[0].header['HIERARCH ESO INS CALMIRR2 ID']))
 
             elif h[0].header['HIERARCH ESO DPR TYPE'] == 'DARK':
                 darks.append(archivo)
                 dark_times.append(h[0].header['EXPTIME'])
 
     f.close()
+    # Pre-2018 ThAr frames. Early FEROS (2003-2004) lit the ThAr lamp through LAMP1,
+    # not LAMP3: with none on the requested lamp the night's most used lamp is taken.
+    use_lamp = lamp
+    if old_wave and not any(w[2] == lamp for w in old_wave):
+        ids = [w[2] for w in old_wave]
+        use_lamp = max(sorted(set(ids)), key=ids.count)
+        print(f"\tNo WAVE frame on {lamp}; using the night's {use_lamp} ThAr frames")
+    for archivo, mjd, lid in old_wave:
+        if lid == use_lamp:
+            ThArNe_ref.append(archivo)
+            ThArNe_ref_dates.append(mjd)
+            ThAr_Ne_ref.append(archivo)
+            ThAr_Ne_ref_dates.append(mjd)
     biases, bias_dates = np.array(biases), np.array(bias_dates)
     flats, flat_dates  = np.array(flats), np.array(flat_dates)
     darks, dark_times  = np.array(darks), np.array(dark_times)

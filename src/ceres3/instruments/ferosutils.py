@@ -32,10 +32,12 @@ def res_gauss2(params, g, x):
     return g-gauss2(params, x)
 
 def get_RG(h):
-    if h['HIERARCH ESO DET READ MODE'] == 'normal':
+    # 2003 headers have no READ MODE card: they take the generic values below.
+    mode = h.get('HIERARCH ESO DET READ MODE', None)
+    if mode == 'normal':
         ron = 5.1
         gain = 3.2
-    elif h['HIERARCH ESO DET READ MODE'] == 'slow':
+    elif mode == 'slow':
         ron = 3.0
         gain = 1.0
     else:

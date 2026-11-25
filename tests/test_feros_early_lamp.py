@@ -67,7 +67,8 @@ def test_2003_frames_without_lamp_or_adc_keywords_classify(tmp_path):
 
 
 def test_get_rg_without_read_mode_card():
-    assert F.get_RG(fits.Header()) == (7.2, 2.7)
+    from ceres3.instruments import ferosutils as U
+    assert U.get_RG(fits.Header()) == (7.2, 2.7)
     h = fits.Header()
     h["HIERARCH ESO DET READ MODE"] = "normal"
-    assert F.get_RG(h) == (5.1, 3.2)
+    assert U.get_RG(h) == (5.1, 3.2)

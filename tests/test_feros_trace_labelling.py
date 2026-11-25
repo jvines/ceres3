@@ -196,9 +196,25 @@ def test_missing_trace_in_used_range_raises(tmpl):
 
 
 def test_unexplained_trace_in_used_range_raises(tmpl):
-    raw = np.vstack([tmpl["coeffs"], _shift(tmpl["coeffs"][_slot(tmpl, "co20")], 6.0)])
+    """A used-range slot with no trace inside tolerance is still an error, even if
+    a stray trace sits near it."""
+    raw = np.vstack([_drop(tmpl, {"co20"}), _shift(tmpl["coeffs"][[_slot(tmpl, "co20")]], 6.0)])
     with pytest.raises(F.FerosTraceError, match="does not match|compete"):
         F.label_traces(raw, NPIX)
+
+
+def test_spurious_extra_trace_between_orders_is_rejected(tmpl):
+    """Early FEROS flats (2003-2004) show a full-length extra trace ~16 px above
+    co27 (y=1295 at x=2048). Every slot is explained by a good trace, so the
+    stray one is dropped instead of aborting the calibration."""
+    stray = _shift(tmpl["coeffs"][[_slot(tmpl, "co27")]], 16.0 - 6.1)
+    raw = np.vstack([_shift(tmpl["coeffs"], -6.1), stray])
+    c_all, info = F.label_traces(raw, NPIX)
+    np.testing.assert_array_equal(c_all, _shift(tmpl["coeffs"][2:], -6.1))
+    assert info["offset_px"] == pytest.approx(-6.1, abs=1e-3)
+    assert len(info["rejected_y_px"]) == 1
+    assert info["rejected_y_px"][0] == pytest.approx(np.polyval(stray[0], 2048), abs=0.01)
+    assert info["matched"] == 72 and info["n_raw"] == 75
 
 
 def test_missing_outside_used_range_is_synthesised_with_the_offset(tmpl):

@@ -725,6 +725,12 @@ def _match_traces(c_raw, npix, o0, n_useful, template):
         tol = TRACE_USED_TOL if in_used[slot[i]] else TRACE_OUTER_TOL
         if res[i] > tol:
             if in_used[slot[i]]:
+                # A stray full-length trace (seen between orders on 2003-2004 flats)
+                # whose nearest slot is already filled by a trace inside tolerance is
+                # not an order: drop it. A slot with no good trace still raises.
+                if np.any((slot == slot[i]) & (res <= tol) & (np.arange(n_raw) != i)):
+                    slot[i] = -1
+                    continue
                 raise FerosTraceError(f'trace at {y0(i)} does not match the template: nearest is '
                                       f"{tmpl['labels'][slot[i]]} (used order range) with a "
                                       f'{res[i]:.1f} px residual > {tol:.1f} px')

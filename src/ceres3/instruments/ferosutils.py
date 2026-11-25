@@ -32,10 +32,12 @@ def res_gauss2(params, g, x):
     return g-gauss2(params, x)
 
 def get_RG(h):
-    if h['HIERARCH ESO DET READ MODE'] == 'normal':
+    # 2003 headers have no READ MODE card: they take the generic values below.
+    mode = h.get('HIERARCH ESO DET READ MODE', None)
+    if mode == 'normal':
         ron = 5.1
         gain = 3.2
-    elif h['HIERARCH ESO DET READ MODE'] == 'slow':
+    elif mode == 'slow':
         ron = 3.0
         gain = 1.0
     else:
@@ -106,6 +108,8 @@ def MedianCombine(ImgList, zero_bo=False, zero='MasterBias.fits'):
     # overwrite_input lets the partition reorder the cube instead of copying it
     return np.median(cube, axis=0, overwrite_input=True), ronoise, gain
 
+EARLY_NROWS = 4102      # dispersion rows of the 2003 FEROS frames (4096 afterwards)
+
 def OverscanTrim(d):
     """
     Overscan correct and Trim a refurbished FEROS image
@@ -118,6 +122,12 @@ def OverscanTrim(d):
     newdata = np.zeros(d[:,50:-50].shape)
     for i in range(len(overscan)):
         newdata[i,:] = d[i,50:-50] - overscan[i]
+    if newdata.shape[0] == EARLY_NROWS:
+        # 2003 frames have 6 more dispersion rows than the 4096 every later epoch has.
+        # Cross-correlating the ThAr orders of 2003-07-08 with 2004-03-07 puts raw row r
+        # of 2003 on row r+1 of the later layout: the first raw row moves to row 1, the
+        # leading row is repeated and the last 6 are dropped.
+        newdata = np.vstack([newdata[:1], newdata[:4095]])
     return newdata
 
 def b_col(d):

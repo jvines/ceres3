@@ -33,10 +33,12 @@ def res_gauss2(params, g, x):
     return g-gauss2(params, x)
 
 def get_RG(h):
-    if h['HIERARCH ESO DET READ MODE'] == 'normal':
+    # 2003 headers have no READ MODE card: they take the generic values below.
+    mode = h.get('HIERARCH ESO DET READ MODE', None)
+    if mode == 'normal':
         ron = 5.1
         gain = 3.2
-    elif h['HIERARCH ESO DET READ MODE'] == 'slow':
+    elif mode == 'slow':
         ron = 3.0
         gain = 1.0
     else:
@@ -342,6 +344,7 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
     ThAr_FP     = []
     FP_FP       = []
     FP_sci      = []
+    old_wave    = []
 
     f = open(log,'w')
     bad_files = []
@@ -388,8 +391,8 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
                     #elif h[0].header['HIERARCH ESO INS CALMIRR2 ID'] == 'LAMP3':
                     simThAr_sci.append(archivo)
                 obname = h[0].header['OBJECT']
-                ra     = h[0].header['HIERARCH ESO INS ADC1 RA']
-                delta  = h[0].header['HIERARCH ESO INS ADC1 DEC']
+                ra     = h[0].header.get('HIERARCH ESO INS ADC1 RA', h[0].header.get('RA', -999.))
+                delta  = h[0].header.get('HIERARCH ESO INS ADC1 DEC', h[0].header.get('DEC', -999.))
                 try:
                     airmass= h[0].header['HIERARCH ESO TEL AIRM START']
                 except:
@@ -401,8 +404,8 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
             elif h[0].header['HIERARCH ESO DPR TYPE'] == 'OBJECT,SKY' or h[0].header['HIERARCH ESO DPR TYPE'] == 'VELOC,SKY':
                 simSky_sci.append(archivo)
                 obname = h[0].header['OBJECT']
-                ra     = h[0].header['HIERARCH ESO INS ADC1 RA']
-                delta  = h[0].header['HIERARCH ESO INS ADC1 DEC']
+                ra     = h[0].header.get('HIERARCH ESO INS ADC1 RA', h[0].header.get('RA', -999.))
+                delta  = h[0].header.get('HIERARCH ESO INS ADC1 DEC', h[0].header.get('DEC', -999.))
                 try:
                     airmass= h[0].header['HIERARCH ESO TEL AIRM START']
                 except:
@@ -430,19 +433,26 @@ def FileClassify(diri, log, lamp='LAMP3', dir_calib=None):
                         ThAr_Ne_ref.append(archivo)
                         ThAr_Ne_ref_dates.append( mjd )
                 else:
-                    if h[0].header['HIERARCH ESO INS CALMIRR2 ID'] == lamp:
-                        ThArNe_ref.append(archivo)
-                        ThArNe_ref_dates.append( mjd )
-
-                    if h[0].header['HIERARCH ESO INS CALMIRR2 ID'] == lamp:
-                        ThAr_Ne_ref.append(archivo)
-                        ThAr_Ne_ref_dates.append( mjd )
+                    old_wave.append((archivo, mjd, h[0].header.get('HIERARCH ESO INS CALMIRR2 ID', '')))
 
             elif h[0].header['HIERARCH ESO DPR TYPE'] == 'DARK':
                 darks.append(archivo)
                 dark_times.append(h[0].header['EXPTIME'])
 
     f.close()
+    # Pre-2018 ThAr frames. Early FEROS (2003-2004) lit the ThAr lamp through LAMP1,
+    # not LAMP3: with none on the requested lamp the night's most used lamp is taken.
+    use_lamp = lamp
+    if old_wave and not any(w[2] == lamp for w in old_wave):
+        ids = [w[2] for w in old_wave]
+        use_lamp = max(sorted(set(ids)), key=ids.count)
+        print(f"\tNo WAVE frame on {lamp}; using the night's {use_lamp} ThAr frames")
+    for archivo, mjd, lid in old_wave:
+        if lid == use_lamp:
+            ThArNe_ref.append(archivo)
+            ThArNe_ref_dates.append(mjd)
+            ThAr_Ne_ref.append(archivo)
+            ThAr_Ne_ref_dates.append(mjd)
     biases, bias_dates = np.array(biases), np.array(bias_dates)
     flats, flat_dates  = np.array(flats), np.array(flat_dates)
     darks, dark_times  = np.array(darks), np.array(dark_times)
@@ -725,6 +735,12 @@ def _match_traces(c_raw, npix, o0, n_useful, template):
         tol = TRACE_USED_TOL if in_used[slot[i]] else TRACE_OUTER_TOL
         if res[i] > tol:
             if in_used[slot[i]]:
+                # A stray full-length trace (seen between orders on 2003-2004 flats)
+                # whose nearest slot is already filled by a trace inside tolerance is
+                # not an order: drop it. A slot with no good trace still raises.
+                if np.any((slot == slot[i]) & (res <= tol) & (np.arange(n_raw) != i)):
+                    slot[i] = -1
+                    continue
                 raise FerosTraceError(f'trace at {y0(i)} does not match the template: nearest is '
                                       f"{tmpl['labels'][slot[i]]} (used order range) with a "
                                       f'{res[i]:.1f} px residual > {tol:.1f} px')

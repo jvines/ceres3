@@ -72,3 +72,13 @@ def test_get_rg_without_read_mode_card():
     h = fits.Header()
     h["HIERARCH ESO DET READ MODE"] = "normal"
     assert U.get_RG(h) == (5.1, 3.2)
+
+
+def test_overscan_trim_crops_2003_frames_to_4096_rows():
+    from ceres3.instruments import ferosutils as U
+    d = np.zeros((4102, 2148))
+    d[1617, 300] = 1000.0
+    out = U.OverscanTrim(d)
+    assert out.shape == (4096, 2048)
+    assert np.unravel_index(np.argmax(out), out.shape) == (1612, 250)
+    assert U.OverscanTrim(np.ones((4096, 2148))).shape == (4096, 2048)

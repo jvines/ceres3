@@ -77,7 +77,7 @@ def test_get_rg_without_read_mode_card():
 def test_overscan_trim_crops_2003_frames_to_4096_rows():
     from ceres3.instruments import ferosutils as U
     d = np.zeros((4102, 2148))
-    d[1617, 300] = 1000.0
+    d[1611, 300] = 1000.0
     out = U.OverscanTrim(d)
     assert out.shape == (4096, 2048)
     assert np.unravel_index(np.argmax(out), out.shape) == (1612, 250)

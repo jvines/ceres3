@@ -109,7 +109,6 @@ def MedianCombine(ImgList, zero_bo=False, zero='MasterBias.fits'):
     return np.median(cube, axis=0, overwrite_input=True), ronoise, gain
 
 EARLY_NROWS = 4102      # dispersion rows of the 2003 FEROS frames (4096 afterwards)
-EARLY_ROW_SHIFT = 5     # first row of the 4096 that line up with later epochs
 
 def OverscanTrim(d):
     """
@@ -125,8 +124,10 @@ def OverscanTrim(d):
         newdata[i,:] = d[i,50:-50] - overscan[i]
     if newdata.shape[0] == EARLY_NROWS:
         # 2003 frames have 6 more dispersion rows than the 4096 every later epoch has.
-        # The bad-column steps near row 1612-1621 sit 5 rows lower than in 2004.
-        newdata = newdata[EARLY_ROW_SHIFT:EARLY_ROW_SHIFT + 4096]
+        # Cross-correlating the ThAr orders of 2003-07-08 with 2004-03-07 puts raw row r
+        # of 2003 on row r+1 of the later layout: the first raw row moves to row 1, the
+        # leading row is repeated and the last 6 are dropped.
+        newdata = np.vstack([newdata[:1], newdata[:4095]])
     return newdata
 
 def b_col(d):

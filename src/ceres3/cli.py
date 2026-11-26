@@ -72,7 +72,8 @@ def cmd_activity(args):
             out_1d = fpath.replace('_sp.fits', '_1d.fits') if args.save_1d else None
 
             activity = compute_activity(spec, instrument=instrument,
-                                        output_1d_path=out_1d, teff=teff)
+                                        output_1d_path=out_1d, teff=teff,
+                                        rv_kms=header.get('RV', None))
 
             # Write activity values back to FITS header
             if args.update_fits:

@@ -217,3 +217,22 @@ def test_band_error_matches_monte_carlo_scatter(filt, width):
              for _ in range(400)]
     scatter = np.std(draws)
     assert 0.7 < sigma / scatter < 1.4, (sigma, scatter)
+
+
+def test_cube_is_measured_in_air_rest_frame():
+    """A barycentric VACUUM cube at RV v gives the same Halpha as the air rest-frame spectrum."""
+    from ceres3.utils.activity import compute_activity
+    from ceres3.utils.correlation import ToVacuum
+
+    rv = 25.0
+    w_air = np.arange(6500.0, 6620.0, 0.02)
+    def line_flux(w):
+        return 1.0 - 0.6 * np.exp(-0.5 * ((w - 6562.808) / 0.4) ** 2)
+    rest = compute_activity(np.vstack([w_air, line_flux(w_air), np.full_like(w_air, 0.01)]))
+    w_obs_vac = ToVacuum(w_air) * (1 + rv / 299792.458)
+    cube = np.zeros((11, 1, w_air.size))
+    cube[0, 0], cube[5, 0], cube[6, 0], cube[8, 0] = w_obs_vac, line_flux(w_air), 1e4, 100.0
+    shifted = compute_activity(cube, rv_kms=rv)
+    unshifted = compute_activity(cube)
+    assert abs(shifted['halpha'] - rest['halpha']) < 0.01 * rest['halpha']
+    assert unshifted['halpha'] > rest['halpha'] * 1.5

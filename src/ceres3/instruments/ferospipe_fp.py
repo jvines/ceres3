@@ -2304,7 +2304,7 @@ if (not JustExtract):
         try:
             from ceres3.utils.activity import compute_activity
             activity = compute_activity(spec, instrument='feros', output_1d_path=spectrum_1d_path,
-                                        teff=T_eff if T_eff != -999 else None)
+                                        teff=T_eff if T_eff != -999 else None, rv_kms=RV)
         except Exception:
             activity = {k: -999.0 for k in ['s_index', 's_index_err', 'log_rhk',
                                              'halpha', 'halpha_err', 'hbeta', 'hbeta_err',

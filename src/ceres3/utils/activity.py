@@ -207,7 +207,8 @@ def merge_echelle(spec, wav_idx=0, flux_idx=5, err_idx=6, snr_idx=8):
     return wavelength, flux, error
 
 
-def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
+def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None,
+                     rv_kms=None):
     """Compute all activity indicators from an echelle spectrum array.
 
     Parameters
@@ -224,6 +225,14 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
         If provided, save the merged 1D rest-frame spectrum as a FITS file.
     teff : float, optional
         Effective temperature in K. Used to compute log R'HK from S-index.
+    rv_kms : float, optional
+        Stellar RV (km/s) of a native 3-D cube. A CERES cube is barycentric and
+        in VACUUM, while every activity band here is defined in AIR at rest, so
+        the cube is measured on ``ToAir(wav / (1 + rv/c))``. Without it the
+        bands sat ~83 km/s + RV off their lines (Ca K is one triangle width
+        off) and the indices read the continuum. Ignored for 2-D input, which
+        callers stage in the air rest frame. The saved 1-D file keeps the
+        cube's own (barycentric vacuum) wavelengths.
 
     Returns
     -------
@@ -277,6 +286,12 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
     good = (wavelength > 0) & np.isfinite(flux) & np.isfinite(error)
     wavelength, flux, error = wavelength[good], flux[good], error[good]
 
+    # Wavelengths the bands are measured on (see ``rv_kms``).
+    meas_wavelength = wavelength
+    if spec.ndim == 3 and rv_kms is not None and np.isfinite(rv_kms):
+        from ceres3.utils.correlation import ToAir
+        meas_wavelength = ToAir(wavelength / (1.0 + float(rv_kms) / 299792.458))
+
     if len(wavelength) < 100:
         return result
 
@@ -300,10 +315,10 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
     # ── S-index (Ca H+K) ─────────────────────────────────────────────
     if instrument.lower() not in S_INDEX_EXCEPTIONS:
         try:
-            NV, sNV = get_line_flux(wavelength, flux, CaV, 20, 'square', error)
-            NR, sNR = get_line_flux(wavelength, flux, CaR, 20, 'square', error)
-            NK, sNK = get_line_flux(wavelength, flux, CaK, 1.09, 'triangle', error)
-            NH, sNH = get_line_flux(wavelength, flux, CaH, 1.09, 'triangle', error)
+            NV, sNV = get_line_flux(meas_wavelength, flux, CaV, 20, 'square', error)
+            NR, sNR = get_line_flux(meas_wavelength, flux, CaR, 20, 'square', error)
+            NK, sNK = get_line_flux(meas_wavelength, flux, CaK, 1.09, 'triangle', error)
+            NH, sNH = get_line_flux(meas_wavelength, flux, CaH, 1.09, 'triangle', error)
 
             if all(v != -999.0 for v in [NV, NR, NK, NH]) and (NR + NV) != 0:
                 S = (NH + NK) / (NR + NV)
@@ -334,9 +349,9 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
 
     # ── H-alpha ───────────────────────────────────────────────────────
     try:
-        FHa, sFHa = get_line_flux(wavelength, flux, Ha, 0.678, 'square', error)
-        F1, sF1 = get_line_flux(wavelength, flux, 6550.87, 10.75, 'square', error)
-        F2, sF2 = get_line_flux(wavelength, flux, 6580.309, 8.75, 'square', error)
+        FHa, sFHa = get_line_flux(meas_wavelength, flux, Ha, 0.678, 'square', error)
+        F1, sF1 = get_line_flux(meas_wavelength, flux, 6550.87, 10.75, 'square', error)
+        F2, sF2 = get_line_flux(meas_wavelength, flux, 6580.309, 8.75, 'square', error)
 
         if all(v != -999.0 for v in [FHa, F1, F2]) and (F1 + F2) != 0:
             Halpha = FHa / (0.5 * (F1 + F2))
@@ -349,9 +364,9 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
 
     # ── HeI ───────────────────────────────────────────────────────────
     try:
-        FHeI, sFHeI = get_line_flux(wavelength, flux, HeI, 0.2, 'square', error)
-        F1, sF1 = get_line_flux(wavelength, flux, 5874.5, 0.5, 'square', error)
-        F2, sF2 = get_line_flux(wavelength, flux, 5879.0, 0.5, 'square', error)
+        FHeI, sFHeI = get_line_flux(meas_wavelength, flux, HeI, 0.2, 'square', error)
+        F1, sF1 = get_line_flux(meas_wavelength, flux, 5874.5, 0.5, 'square', error)
+        F2, sF2 = get_line_flux(meas_wavelength, flux, 5879.0, 0.5, 'square', error)
 
         if all(v != -999.0 for v in [FHeI, F1, F2]) and (F1 + F2) != 0:
             HelI = FHeI / (0.5 * (F1 + F2))
@@ -364,10 +379,10 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
 
     # ── NaI D1/D2 ────────────────────────────────────────────────────
     try:
-        D1, sD1 = get_line_flux(wavelength, flux, NaID1, 1.0, 'square', error)
-        D2, sD2 = get_line_flux(wavelength, flux, NaID2, 1.0, 'square', error)
-        L, sL = get_line_flux(wavelength, flux, 5805.0, 10.0, 'square', error)
-        R, sR = get_line_flux(wavelength, flux, 6090.0, 20.0, 'square', error)
+        D1, sD1 = get_line_flux(meas_wavelength, flux, NaID1, 1.0, 'square', error)
+        D2, sD2 = get_line_flux(meas_wavelength, flux, NaID2, 1.0, 'square', error)
+        L, sL = get_line_flux(meas_wavelength, flux, 5805.0, 10.0, 'square', error)
+        R, sR = get_line_flux(meas_wavelength, flux, 6090.0, 20.0, 'square', error)
 
         if all(v != -999.0 for v in [D1, D2, L, R]) and (L + R) != 0:
             NaI = (D1 + D2) / (L + R)
@@ -381,9 +396,9 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
 
     # ── H-beta ────────────────────────────────────────────────────────
     try:
-        FHb, sFHb = get_line_flux(wavelength, flux, Hb, 0.678, 'square', error)
-        F1, sF1 = get_line_flux(wavelength, flux, 4847.0, 10.0, 'square', error)
-        F2, sF2 = get_line_flux(wavelength, flux, 4876.0, 10.0, 'square', error)
+        FHb, sFHb = get_line_flux(meas_wavelength, flux, Hb, 0.678, 'square', error)
+        F1, sF1 = get_line_flux(meas_wavelength, flux, 4847.0, 10.0, 'square', error)
+        F2, sF2 = get_line_flux(meas_wavelength, flux, 4876.0, 10.0, 'square', error)
 
         if all(v != -999.0 for v in [FHb, F1, F2]) and (F1 + F2) != 0:
             Hbeta = FHb / (0.5 * (F1 + F2))
@@ -398,15 +413,15 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
     # Individual line indices normalized by continuum on each side
     if instrument.lower() not in CA_IRT_EXCEPTIONS:
         try:
-            CL, sCL = get_line_flux(wavelength, flux, 8475.0, 10.0, 'square', error)
-            CR, sCR = get_line_flux(wavelength, flux, 8700.0, 10.0, 'square', error)
+            CL, sCL = get_line_flux(meas_wavelength, flux, 8475.0, 10.0, 'square', error)
+            CR, sCR = get_line_flux(meas_wavelength, flux, 8700.0, 10.0, 'square', error)
 
             if all(v != -999.0 for v in [CL, CR]) and (CL + CR) != 0:
                 cont = 0.5 * (CL + CR)
                 scont = 0.5 * np.sqrt(sCL**2 + sCR**2)
 
                 for line, key in [(CaIRT1, 'ca_irt1'), (CaIRT2, 'ca_irt2'), (CaIRT3, 'ca_irt3')]:
-                    Fl, sFl = get_line_flux(wavelength, flux, line, 1.0, 'square', error)
+                    Fl, sFl = get_line_flux(meas_wavelength, flux, line, 1.0, 'square', error)
                     if Fl != -999.0 and cont != 0:
                         idx = Fl / cont
                         sidx = idx * np.sqrt((sFl / Fl)**2 + (scont / cont)**2)
@@ -417,11 +432,11 @@ def compute_activity(spec, instrument='feros', output_1d_path=None, teff=None):
 
     # ── Mg I b triplet (5167, 5173, 5184 A) ─────────────────────────
     try:
-        Fb1, sFb1 = get_line_flux(wavelength, flux, MgIb1, 0.5, 'square', error)
-        Fb2, sFb2 = get_line_flux(wavelength, flux, MgIb2, 0.5, 'square', error)
-        Fb3, sFb3 = get_line_flux(wavelength, flux, MgIb3, 0.5, 'square', error)
-        CL, sCL = get_line_flux(wavelength, flux, 5140.0, 10.0, 'square', error)
-        CR, sCR = get_line_flux(wavelength, flux, 5200.0, 10.0, 'square', error)
+        Fb1, sFb1 = get_line_flux(meas_wavelength, flux, MgIb1, 0.5, 'square', error)
+        Fb2, sFb2 = get_line_flux(meas_wavelength, flux, MgIb2, 0.5, 'square', error)
+        Fb3, sFb3 = get_line_flux(meas_wavelength, flux, MgIb3, 0.5, 'square', error)
+        CL, sCL = get_line_flux(meas_wavelength, flux, 5140.0, 10.0, 'square', error)
+        CR, sCR = get_line_flux(meas_wavelength, flux, 5200.0, 10.0, 'square', error)
 
         if all(v != -999.0 for v in [Fb1, Fb2, Fb3, CL, CR]) and (CL + CR) != 0:
             MgI = (Fb1 + Fb2 + Fb3) / (1.5 * (CL + CR))

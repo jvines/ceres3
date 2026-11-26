@@ -134,9 +134,14 @@ def get_line_flux(wavelength, flux, line, width, filt='square', error=None):
         err_slice = error[ini:end]
         wav_slice = wavelength[ini:end]
         resp_vals = resp_f(wav_slice)
+        # Error of the response-weighted MEAN flux, sum(r f)/sum(r):
+        # sqrt(sum(r^2 sigma^2)) / sum(r). The previous expression,
+        # sqrt(sum(r^2 sigma^2)/sum(r^2)), is the weighted RMS of the per-pixel
+        # errors and overstated the band error by ~sqrt(N_eff) (7x on FEROS
+        # Ca II H&K, ~25x on the 20 A continuum bands).
         num = np.sum((err_slice * resp_vals) ** 2)
-        den = np.sum(resp_vals ** 2)
-        sigma = np.sqrt(num / den) if den > 0 else -999.0
+        den = np.sum(resp_vals)
+        sigma = np.sqrt(num) / den if den > 0 else -999.0
         return integrated_flux, sigma
 
     return integrated_flux

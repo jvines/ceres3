@@ -200,3 +200,20 @@ def test_process_spectrum_reads_harps_s1d_layout(tmp_path, synthetic_spectrum) -
     assert result["halpha"] != -999.0
     assert result["hei"] != -999.0
     assert result["nai_d1d2"] != -999.0
+
+
+@pytest.mark.parametrize("filt, width", [("square", 20.0), ("triangle", 1.09)])
+def test_band_error_matches_monte_carlo_scatter(filt, width):
+    """The returned sigma is the error of the band's mean flux (not the per-pixel RMS)."""
+    from ceres3.utils.activity import get_line_flux
+
+    rng = np.random.default_rng(1)
+    wavelength = np.arange(3890.0, 4010.0, 0.03)
+    flux = np.ones_like(wavelength)
+    err = np.full_like(wavelength, 0.05)
+    line = 3968.47 if filt == "triangle" else 3901.07
+    _, sigma = get_line_flux(wavelength, flux, line, width, filt=filt, error=err)
+    draws = [get_line_flux(wavelength, flux + rng.normal(0, 0.05, flux.size), line, width, filt=filt)
+             for _ in range(400)]
+    scatter = np.std(draws)
+    assert 0.7 < sigma / scatter < 1.4, (sigma, scatter)

@@ -1,5 +1,5 @@
 project('ceres3', 'c', 'fortran',
-    version: '1.3.8',
+    version: '1.3.9',
     default_options: ['warning_level=1'],
 )
 

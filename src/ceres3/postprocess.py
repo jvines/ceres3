@@ -89,8 +89,9 @@ def process_spectrum(fits_path, instrument=None, save_1d=False,
 
     out_1d = fits_path.replace('_sp.fits', '_1d.fits') if save_1d else None
 
+    rv_kms = header.get('RV', None) if np.ndim(spec) == 3 else None
     activity = compute_activity(spec, instrument=instrument,
-                                output_1d_path=out_1d, teff=teff)
+                                output_1d_path=out_1d, teff=teff, rv_kms=rv_kms)
 
     # Add metadata from header
     activity['filename'] = os.path.basename(fits_path)
